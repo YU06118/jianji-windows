@@ -1,0 +1,124 @@
+name: Release
+# 推送 v* 标签触发：构建 → minisign 签名 → 创建 Release（含 latest.json）→ 同步腾讯 COS 镜像
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend deps
+        run: npm install
+        working-directory: desktop
+
+      - name: Build & sign & publish Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: v__VERSION__
+          releaseName: '简记 v__VERSION__'
+          releaseBody: '下载 简记_x.y.z_x64-setup.exe 安装；更新签名 minisign 公钥内置于应用。已安装旧版本的用户将收到应用内自动更新。'
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true
+
+      # ---------- 生成并上传 latest.json（tauri-action 因中文资产名被 GitHub 清洗而无法自动生成）----------
+      - name: Generate & upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # 1) 把 Release 资产重命名为 ASCII（GitHub 会清洗中文文件名，导致签名匹配失败）
+          python - << 'PY'
+          import json, os, subprocess
+          repo, tag = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_REF_NAME']
+          version = tag.lstrip('v')
+          assets = json.loads(subprocess.check_output(
+              ['gh', 'api', f'repos/{repo}/releases/tags/{tag}'],
+              text=True, encoding='utf-8'))
+          rel_id = assets['id']
+          mapping = {}
+          for a in assets['assets']:
+              name = a['name']
+              if name.endswith('-setup.exe') or name.endswith('-setup.exe.sig'):
+                  new = 'jianji_' + version + '_x64-setup.exe' + ('.sig' if name.endswith('.sig') else '')
+                  if new != name:
+                      subprocess.check_call(['gh', 'api', '-X', 'PATCH',
+                          f'repos/{repo}/releases/assets/{a["id"]}',
+                          '-f', f'name={new}'], stdout=subprocess.DEVNULL)
+                  mapping[name] = new
+          print('assets:', mapping)
+          PY
+          # 2) 下载签名并生成 latest.json（signature 为 .sig 文件完整内容）
+          mkdir -p updater
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" -p "jianji_*-setup.exe.sig" -D updater
+          python - << 'PY'
+          import json, glob, os, subprocess
+          from datetime import datetime, timezone
+          repo, tag = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_REF_NAME']
+          version = tag.lstrip('v')
+          sig = open(glob.glob('updater/jianji_*-setup.exe.sig')[0], encoding='utf-8').read()
+          url = f'https://github.com/{repo}/releases/download/{tag}/jianji_{version}_x64-setup.exe'
+          d = {'version': version, 'notes': '详见 Release 页', 'pub_date':
+               datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+               'platforms': {'windows-x86_64': {'signature': sig, 'url': url}}}
+          json.dump(d, open('updater/latest.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          print(open('updater/latest.json', encoding='utf-8').read())
+          PY
+          # 3) 上传（发布纪律：上传前已本地校验 JSON 合法）
+          python -c "import json; json.load(open('updater/latest.json', encoding='utf-8'))"
+          gh release upload "$GITHUB_REF_NAME" updater/latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          echo "latest.json uploaded"
+
+      # ---------- 同步镜像到腾讯 COS（Secrets 未配置时自动跳过）----------
+      - name: Sync mirror to Tencent COS
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}        # 形如 jianji-releases-125xxxxxxx
+          COS_REGION: ${{ secrets.COS_REGION }}        # 形如 ap-guangzhou
+        if: env.COS_SECRET_ID != '' && env.COS_SECRET_KEY != '' && env.COS_BUCKET != '' && env.COS_REGION != ''
+        shell: bash
+        run: |
+          pip install coscmd
+          mkdir -p mirror
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" -p "latest.json" -D mirror
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" -p "*-setup.exe" -D mirror
+          python - << 'PY'
+          import json, os, glob
+          bucket, region = os.environ['COS_BUCKET'], os.environ['COS_REGION']
+          p = 'mirror/latest.json'
+          d = json.load(open(p, encoding='utf-8'))
+          w = d['platforms']['windows-x86_64']
+          # GitHub Release URL -> COS URL；安装包文件名改 ASCII
+          exe = glob.glob('mirror/*-setup.exe')[0]
+          ascii_name = exe.replace('简记_', 'jianji_')
+          if exe != ascii_name:
+              os.rename(exe, ascii_name)
+          w['url'] = f'https://{bucket}.cos.{region}.myqcloud.com/{os.path.basename(ascii_name)}'
+          json.dump(d, open(p, 'w', encoding='utf-8'), ensure_ascii=False)
+          print('mirror latest.json:', json.dumps(w, ensure_ascii=False))
+          PY
+          coscmd config -a "$COS_SECRET_ID" -s "$COS_SECRET_KEY" -b "$COS_BUCKET" -r "$COS_REGION"
+          coscmd upload "mirror/jianji_*_x64-setup.exe" /
+          coscmd upload -H "Cache-Control: max-age=300" "mirror/latest.json" latest.json
+          echo "mirror synced"

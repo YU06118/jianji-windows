@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简记 · 桌面端视觉原型</title>
+<style>
+:root{
+  --bg:#eceef2; --surface:#ffffff; --surface2:#f5f5f7; --surface3:#ffffff;
+  --label:#1d1d1f; --label2:rgba(60,60,67,.60); --label3:rgba(60,60,67,.30);
+  --sep:rgba(60,60,67,.14); --income:#2f9e6b; --expense:#c1504a;
+  --accent:#4f5bd5; --accent-soft:rgba(79,91,213,.10);
+  --glass:rgba(255,255,255,.72); --glass-line:rgba(255,255,255,.55);
+  --shadow:0 24px 70px rgba(20,24,40,.22),0 4px 14px rgba(20,24,40,.08);
+  --win-bg:var(--surface);
+  --radius:14px; --sidebar:236px;
+  --ease-spring:cubic-bezier(.22,1,.36,1);
+  --title:34px; --t1:28px; --t2:22px; --t3:20px; --head:17px; --body:15px; --call:14px; --sub:13px; --foot:12px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d0e12; --surface:#17181d; --surface2:#1c1d23; --surface3:#23242b;
+    --label:#f5f5f7; --label2:rgba(235,235,245,.62); --label3:rgba(235,235,245,.32);
+    --sep:rgba(255,255,255,.14); --income:#30d158; --expense:#ff6b65;
+    --accent:#7c86ff; --accent-soft:rgba(124,134,255,.16);
+    --glass:rgba(30,30,34,.72); --glass-line:rgba(255,255,255,.10);
+    --shadow:0 24px 70px rgba(0,0,0,.55),0 4px 14px rgba(0,0,0,.3);
+    --win-bg:linear-gradient(180deg,#2E2745 0%,#202020 100%);
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  background:radial-gradient(1200px 700px at 18% 10%,#dfe3ec 0%,transparent 60%),
+             radial-gradient(1000px 700px at 85% 90%,#e6e2ea 0%,transparent 55%),var(--bg);
+  color:var(--label);display:grid;place-items:center;overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+@media (prefers-color-scheme: dark){body{background:radial-gradient(1200px 700px at 18% 10%,#1a1d27 0%,transparent 60%),radial-gradient(1000px 700px at 85% 90%,#201b26 0%,transparent 55%),var(--bg)}}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.desk{padding:26px;width:100%;height:100%;display:grid;place-items:center}
+.window{
+  width:min(1180px,96vw);height:min(760px,92vh);background:var(--win-bg);
+  border-radius:14px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;
+  border:1px solid rgba(255,255,255,.35);
+}
+.titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:8px;padding:0 16px;
+  background:var(--glass);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid var(--sep);position:relative;z-index:5}
+.traffic{display:flex;gap:8px}
+.traffic i{width:12px;height:12px;border-radius:50%;display:block;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.12)}
+.t-red{background:#ff5f57}.t-yellow{background:#febc2e}.t-green{background:#28c840}
+.titlebar-label{position:absolute;left:0;right:0;text-align:center;font-size:13px;font-weight:600;color:var(--label2);pointer-events:none}
+.shell{flex:1;display:flex;min-height:0}
+/* ---------- sidebar ---------- */
+.sidebar{width:var(--sidebar);flex:0 0 var(--sidebar);padding:22px 14px 16px;display:flex;flex-direction:column;
+  background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(255,255,255,.28));
+  backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-right:1px solid var(--sep)}
+@media(prefers-color-scheme:dark){.sidebar{background:linear-gradient(180deg,rgba(46,39,69,.45),rgba(32,32,32,.35))}}
+.brand{display:flex;align-items:center;gap:11px;padding:4px 10px 22px}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(145deg,#5f6ae6,#3944b8);
+  display:grid;place-items:center;color:#fff;font-size:19px;font-weight:700;box-shadow:0 4px 10px rgba(60,70,190,.35)}
+.brand b{font-size:16px;letter-spacing:.5px}.brand small{display:block;font-size:11px;color:var(--label3);font-weight:500;margin-top:1px}
+.nav-label{font-size:11px;color:var(--label3);font-weight:600;padding:0 12px 7px;letter-spacing:.6px}
+.nav{display:flex;flex-direction:column;gap:3px}
+.nav button{
+  display:flex;align-items:center;gap:11px;height:42px;padding:0 12px;border:0;border-radius:9px;
+  background:transparent;color:var(--label2);font-size:14px;font-weight:500;cursor:pointer;text-align:left;width:100%;
+  font-family:inherit;transition:background .18s ease,color .18s ease,transform .18s var(--ease-spring)}
+.nav button svg{width:19px;height:19px;flex:0 0 19px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.nav button:hover{background:rgba(120,120,140,.09);color:var(--label)}
+.nav button:active{transform:scale(.97)}
+.nav button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.sidebar-foot{margin-top:auto;font-size:11px;color:var(--label3);padding:12px 12px 2px;line-height:1.6}
+/* ---------- main ---------- */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--surface2)}
+/* 深色档主区透明以露出窗口紫黑渐变；必须放在基础 .main 之后（同特异性后加载者胜） */
+@media(prefers-color-scheme:dark){.main{background:transparent}}
+.toolbar{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:12px;padding:0 22px;
+  background:var(--glass);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid var(--sep);border-top:1px solid var(--glass-line);position:relative;z-index:4}
+.search{flex:1;max-width:320px;height:32px;border-radius:8px;background:rgba(120,120,140,.10);display:flex;align-items:center;gap:8px;padding:0 11px;color:var(--label3)}
+.search svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2}
+.search span{font-size:13px}
+.toolbar .spacer{flex:1}
+.month-pill{height:32px;padding:0 13px;border-radius:8px;border:1px solid var(--sep);background:var(--surface);
+  display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;color:var(--label)}
+.month-pill svg{width:14px;height:14px;stroke:var(--label2);fill:none;stroke-width:2}
+.btn-primary{height:34px;padding:0 16px;border:0;border-radius:9px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;
+  cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(79,91,213,.28);transition:transform .12s var(--ease-spring),box-shadow .2s ease,filter .2s}
+.btn-primary:hover{filter:brightness(1.07)}
+.btn-primary:active{transform:scale(.97);box-shadow:0 2px 6px rgba(79,91,213,.3)}
+.content{flex:1;overflow:auto;padding:26px 30px 40px;scrollbar-width:thin}
+.content::-webkit-scrollbar{width:9px}.content::-webkit-scrollbar-thumb{background:rgba(120,120,140,.3);border-radius:9px;border:3px solid transparent;background-clip:content-box}
+.view{display:none;animation:viewIn .42s var(--ease-spring) both}
+.view.active{display:block}
+@keyframes viewIn{from{opacity:0;transform:translateY(10px) scale(.995)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.view{animation:fadeOnly .2s ease both}@keyframes fadeOnly{from{opacity:0}to{opacity:1}}}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+.page-head h1{font-size:var(--title);line-height:1.2;font-weight:700;letter-spacing:-.5px}
+.page-head p{font-size:var(--sub);color:var(--label2);margin-top:5px}
+/* ---------- stat cards ---------- */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px}
+.card{background:var(--glass);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
+  border:1px solid var(--glass-line);border-radius:var(--radius);padding:18px 20px;position:relative;overflow:hidden;
+  box-shadow:0 1px 2px rgba(20,24,40,.05),inset 0 1px 0 rgba(255,255,255,.35)}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.7),transparent)}
+.card .k{font-size:var(--sub);color:var(--label2);font-weight:500}
+.card .v{font-size:clamp(19px,2.1vw,30px);font-weight:700;letter-spacing:-.5px;margin-top:8px;white-space:nowrap}
+.card .v .cur{font-size:.7em;margin-right:2px}
+.card .v.expense{color:var(--expense)}.card .v.income{color:var(--income)}
+.card .d{font-size:var(--foot);color:var(--label3);margin-top:7px;display:flex;align-items:center;gap:5px}
+.card .d b{font-weight:600}.card .d .up{color:var(--expense)}.card .d .down{color:var(--income)}
+/* ---------- panels ---------- */
+.grid2{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:20px}
+.panel{background:var(--surface);border:1px solid var(--sep);border-radius:var(--radius);padding:18px 20px}
+.panel h3{font-size:var(--t3);font-weight:600;letter-spacing:-.2px}
+.panel .sub{font-size:var(--foot);color:var(--label3);margin-top:3px}
+.panel-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px}
+.legend{font-size:var(--foot);color:var(--label2);display:flex;gap:12px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+/* donut */
+.donut-wrap{display:flex;align-items:center;gap:22px}
+.donut{width:150px;height:150px;border-radius:50%;position:relative;flex:0 0 150px}
+.donut::after{content:"";position:absolute;inset:30px;background:var(--surface);border-radius:50%;box-shadow:inset 0 0 0 1px var(--sep)}
+.donut-center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;z-index:2;white-space:nowrap}
+.donut-center>div{display:flex;flex-direction:column;align-items:center;gap:2px;line-height:1.2}
+.donut-center b{font-size:16px;letter-spacing:-.3px}.donut-center span{font-size:var(--foot);color:var(--label3)}
+.cat-list{flex:1;display:flex;flex-direction:column;gap:9px}
+.cat-row{display:flex;align-items:center;gap:9px;font-size:var(--sub)}
+.cat-row .dot{width:9px;height:9px;border-radius:3px;flex:0 0 9px}
+.cat-row .name{flex:1;color:var(--label2);white-space:nowrap}
+.cat-row .amt{font-weight:600}
+.cat-row .pct{color:var(--label3);width:34px;text-align:right}
+/* line chart */
+.chart-svg{width:100%;height:150px;display:block;overflow:visible}
+.xaxis{display:flex;justify-content:space-between;font-size:11px;color:var(--label3);margin-top:6px;padding:0 2px}
+/* transactions */
+.list-panel{background:var(--surface);border:1px solid var(--sep);border-radius:var(--radius);overflow:hidden}
+.list-head{padding:16px 20px;border-bottom:1px solid var(--sep);display:flex;justify-content:space-between;align-items:center}
+.list-head h3{font-size:var(--t3);font-weight:600}
+.link{font-size:var(--sub);color:var(--accent);font-weight:600;cursor:pointer}
+.date-group{padding:8px 0}
+.date-label{font-size:var(--foot);color:var(--label3);font-weight:600;padding:8px 20px 6px;display:flex;justify-content:space-between}
+.tx{display:flex;align-items:center;gap:13px;padding:10px 20px;transition:background .15s ease;cursor:default}
+.tx:hover{background:var(--surface2)}
+.tx .ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-size:17px;flex:0 0 38px}
+.tx .meta{flex:1;min-width:0}
+.tx .meta b{font-size:var(--head);font-weight:500;display:block}
+.tx .meta span{font-size:var(--foot);color:var(--label3);display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx .money{font-size:var(--head);font-weight:600;white-space:nowrap}
+.tx .money.out{color:var(--expense)}.tx .money.in{color:var(--income)}
+.tx .thumb{width:38px;height:38px;border-radius:9px;background:var(--surface2);border:1px solid var(--sep);display:grid;place-items:center;color:var(--label3);font-size:15px}
+.tx .del{opacity:0;border:0;background:transparent;color:var(--label3);cursor:pointer;font-size:16px;padding:6px;border-radius:6px;transition:opacity .15s,background .15s}
+.tx:hover .del{opacity:1}.tx .del:hover{background:rgba(200,80,74,.12);color:var(--expense)}
+/* filters */
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.chip{height:30px;padding:0 13px;border-radius:15px;border:1px solid var(--sep);background:var(--surface);font-size:var(--sub);color:var(--label2);cursor:pointer;font-family:inherit;transition:all .18s var(--ease-spring)}
+.chip:active{transform:scale(.97)}.chip.on{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:600}
+/* stats view tabs */
+.seg{display:inline-flex;background:rgba(120,120,140,.12);border-radius:9px;padding:3px;gap:2px}
+.seg button{border:0;background:transparent;font-family:inherit;font-size:var(--sub);font-weight:500;color:var(--label2);padding:6px 14px;border-radius:7px;cursor:pointer;transition:all .2s var(--ease-spring)}
+.seg button.on{background:var(--surface);color:var(--label);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+/* heatmap */
+.heatgrid{display:grid;grid-template-columns:repeat(18,1fr);gap:5px;margin-top:4px}
+.heatgrid i{aspect-ratio:1;border-radius:4px;display:block;transition:transform .2s var(--ease-spring)}
+.heatgrid i:hover{transform:scale(1.35)}
+.heatlegend{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--label3);margin-top:12px;justify-content:flex-end}
+.heatlegend i{width:12px;height:12px;border-radius:3px}
+/* categories grid */
+.catgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+.catcard{background:var(--surface);border:1px solid var(--sep);border-radius:12px;padding:16px 10px;text-align:center;transition:transform .2s var(--ease-spring),box-shadow .2s}
+.catcard:hover{transform:translateY(-3px);box-shadow:0 8px 20px rgba(20,24,40,.08)}
+.catcard .e{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;font-size:21px;margin:0 auto 9px}
+.catcard b{font-size:var(--sub);font-weight:600;display:block}.catcard span{font-size:11px;color:var(--label3)}
+/* settings */
+.settings{background:var(--surface);border:1px solid var(--sep);border-radius:var(--radius);overflow:hidden;max-width:720px}
+.setrow{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--sep)}
+.setrow:last-child{border-bottom:0}
+.setrow .si{width:30px;height:30px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:15px;flex:0 0 30px}
+.setrow .st{flex:1}.setrow .st b{font-size:var(--body);font-weight:500;display:block}.setrow .st span{font-size:var(--foot);color:var(--label3)}
+.toggle{width:44px;height:26px;border-radius:13px;background:rgba(120,120,140,.28);position:relative;cursor:pointer;transition:background .2s;flex:0 0 44px}
+.toggle::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .25s var(--ease-spring)}
+.toggle.on{background:var(--accent)}.toggle.on::after{transform:translateX(18px)}
+/* ---------- add sheet modal ---------- */
+.backdrop{position:fixed;inset:0;background:rgba(20,22,32,.28);backdrop-filter:blur(3px);display:grid;place-items:center;z-index:50;opacity:0;pointer-events:none;transition:opacity .3s ease}
+.backdrop.show{opacity:1;pointer-events:auto}
+.sheet{width:370px;background:var(--glass);backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);
+  border:1px solid var(--glass-line);border-radius:20px;box-shadow:0 30px 80px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.4);
+  padding:22px;transform:translateY(24px) scale(.96);opacity:0;transition:transform .48s var(--ease-spring),opacity .3s ease}
+.backdrop.show .sheet{transform:none;opacity:1}
+@media(prefers-reduced-motion:reduce){.sheet{transition:opacity .2s ease;transform:none}}
+.sheet h2{font-size:var(--t2);font-weight:600;text-align:center}
+.sheet .seg{display:flex;margin:14px auto 18px;width:max-content}
+.amount-box{display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 0 14px}
+.amount-box .cur{font-size:24px;color:var(--label3);align-self:flex-start;margin-top:3px}
+.amt-in{
+  width:min(260px,84%);height:48px;
+  border:0;outline:0;background:transparent;
+  font-family:inherit;font-size:40px;font-weight:700;letter-spacing:-1px;
+  color:var(--label);text-align:center;caret-color:var(--accent);padding:0;
+}
+.amt-in::selection{background:var(--accent-soft)}
+.pickcat{display:flex;gap:8px;overflow:auto;padding:4px 0 14px;scrollbar-width:none}
+.pickcat::-webkit-scrollbar{display:none}
+.pickcat .pc{flex:0 0 auto;width:60px;text-align:center;padding:8px 4px;border-radius:11px;border:1px solid transparent;cursor:pointer;transition:all .2s var(--ease-spring)}
+.pickcat .pc.on{background:var(--accent-soft);border-color:var(--accent)}
+.pickcat .pc .e{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;font-size:17px;margin:0 auto 5px}
+.pickcat .pc span{font-size:11px;color:var(--label2)}
+.sheet-actions{display:flex;gap:10px;margin-top:2px}
+.sheet-actions button{height:42px;border-radius:10px;font-family:inherit;font-size:14px;font-weight:600;
+  cursor:pointer;transition:transform .1s var(--ease-spring),filter .15s}
+.sheet-actions button:active{transform:scale(.97)}
+.btn-photo{flex:0 0 96px;border:1px solid var(--sep);background:var(--surface);color:var(--label2)}
+.btn-done{flex:1;border:0;background:var(--accent);color:#fff;box-shadow:0 4px 12px rgba(79,91,213,.28)}
+.note-in{width:100%;height:38px;border-radius:9px;border:1px solid var(--sep);background:var(--surface);padding:0 12px;font-size:var(--sub);font-family:inherit;color:var(--label);outline:none;margin-bottom:12px}
+.note-in:focus{border-color:var(--accent)}
+/* toast */
+.toast{position:fixed;bottom:34px;left:50%;transform:translate(-50%,20px);background:rgba(30,30,36,.9);color:#fff;padding:12px 22px;border-radius:12px;font-size:14px;font-weight:500;z-index:80;opacity:0;pointer-events:none;transition:all .4s var(--ease-spring);box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+/* 自绘更新确认框（WebView2 下原生 confirm() 不可靠，必须自绘） */
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:90;backdrop-filter:blur(4px)}
+.modal-mask.show{display:flex}
+.modal-box{background:var(--surface,#1e1e24);border-radius:16px;padding:22px;width:340px;max-width:86vw;box-shadow:var(--shadow,0 20px 60px rgba(0,0,0,.4))}
+.modal-title{font-size:17px;font-weight:700;margin-bottom:10px}
+.modal-msg{font-size:13.5px;line-height:1.7;color:var(--label2,#888);white-space:pre-wrap;margin-bottom:18px}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end}
+.modal-btn{border:0;border-radius:10px;padding:9px 18px;font-size:14px;font-weight:600;cursor:pointer}
+.modal-btn.ghost{background:rgba(128,128,128,.15);color:inherit}
+.modal-btn.primary{background:var(--accent,#5b6cff);color:#fff}
+.modal-btn.danger{background:var(--expense,#c1504a);color:#fff}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:var(--foot);color:var(--accent);background:var(--accent-soft);padding:5px 10px;border-radius:20px;font-weight:600}
+.modal-input{width:100%;height:38px;border-radius:9px;border:1px solid var(--sep);background:var(--surface);padding:0 12px;font-size:var(--sub);font-family:inherit;color:var(--label);outline:none;margin-bottom:16px}
+.modal-input:focus{border-color:var(--accent)}
+/* 每日提醒时间输入 */
+.time-in{width:92px;height:30px;border:1px solid var(--sep);border-radius:8px;background:var(--surface);color:var(--label);font-family:inherit;font-size:var(--sub);padding:0 6px;outline:none;flex:0 0 92px}
+.time-in:focus{border-color:var(--accent)}
+/* 明细行编辑按钮 */
+.tx .edit{opacity:0;border:0;background:transparent;color:var(--label3);cursor:pointer;font-size:15px;padding:6px;border-radius:6px;transition:opacity .15s,background .15s}
+.tx:hover .edit{opacity:1}.tx .edit:hover{background:var(--accent-soft);color:var(--accent)}
+/* 分类编辑弹窗 */
+.catcard{cursor:pointer}
+.catcard.custom b::after{content:' · 自定义';font-size:10px;color:var(--accent);font-weight:600}
+.cat-form-row{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px}
+.cat-form-label{width:40px;flex:0 0 40px;font-size:var(--sub);color:var(--label2);padding-top:6px}
+.cat-icons{display:flex;flex-wrap:wrap;gap:6px;flex:1;max-height:80px;overflow:auto}
+.cat-icons i{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-style:normal;font-size:17px;cursor:pointer;border:1px solid transparent;transition:all .15s}
+.cat-icons i.on{background:var(--accent-soft);border-color:var(--accent)}
+.cat-colors{display:flex;flex-wrap:wrap;gap:9px;flex:1}
+.cat-colors i{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent;box-shadow:inset 0 0 0 1px var(--sep)}
+.cat-colors i.on{border-color:var(--label)}
+.btn-del-op{flex:0 0 88px;border:1px solid var(--sep);background:var(--surface);color:var(--expense)}
+.sheet-cancel{display:block;width:100%;height:32px;margin-top:8px;border:0;background:transparent;color:var(--label2);font-family:inherit;font-size:var(--sub);cursor:pointer}
+/* ---------- 手动外观：根节点 class 覆盖系统 media query（跟随系统时两个 class 都不加） ---------- */
+html.theme-light{
+  --bg:#eceef2; --surface:#ffffff; --surface2:#f5f5f7; --surface3:#ffffff;
+  --label:#1d1d1f; --label2:rgba(60,60,67,.60); --label3:rgba(60,60,67,.30);
+  --sep:rgba(60,60,67,.14); --income:#2f9e6b; --expense:#c1504a;
+  --accent:#4f5bd5; --accent-soft:rgba(79,91,213,.10);
+  --glass:rgba(255,255,255,.72); --glass-line:rgba(255,255,255,.55);
+  --shadow:0 24px 70px rgba(20,24,40,.22),0 4px 14px rgba(20,24,40,.08);
+  --win-bg:var(--surface);
+}
+html.theme-dark{
+  --bg:#0d0e12; --surface:#17181d; --surface2:#1c1d23; --surface3:#23242b;
+  --label:#f5f5f7; --label2:rgba(235,235,245,.62); --label3:rgba(235,235,245,.32);
+  --sep:rgba(255,255,255,.14); --income:#30d158; --expense:#ff6b65;
+  --accent:#7c86ff; --accent-soft:rgba(124,134,255,.16);
+  --glass:rgba(30,30,34,.72); --glass-line:rgba(255,255,255,.10);
+  --shadow:0 24px 70px rgba(0,0,0,.55),0 4px 14px rgba(0,0,0,.3);
+  --win-bg:linear-gradient(180deg,#2E2745 0%,#202020 100%);
+}
+html.theme-light body{background:radial-gradient(1200px 700px at 18% 10%,#dfe3ec 0%,transparent 60%),radial-gradient(1000px 700px at 85% 90%,#e6e2ea 0%,transparent 55%),var(--bg)}
+html.theme-dark body{background:radial-gradient(1200px 700px at 18% 10%,#1a1d27 0%,transparent 60%),radial-gradient(1000px 700px at 85% 90%,#201b26 0%,transparent 55%),var(--bg)}
+html.theme-light .sidebar{background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(255,255,255,.28))}
+html.theme-dark .sidebar{background:linear-gradient(180deg,rgba(46,39,69,.45),rgba(32,32,32,.35))}
+html.theme-light .main{background:var(--surface2)}
+html.theme-dark .main{background:transparent}
+/* 小票缩略图可点击查看 */
+.tx .thumb{border:1px solid var(--sep);cursor:zoom-in;font-family:inherit;padding:0}
+.tx .thumb:hover{color:var(--accent);border-color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="desk">
+<div class="window">
+  <div class="titlebar">
+    <div class="traffic"><i class="t-red"></i><i class="t-yellow"></i><i class="t-green"></i></div>
+    <div class="titlebar-label">简记</div>
+  </div>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">简</div><div><b>简记</b><small>Simple Ledger</small></div></div>
+      <div class="nav-label">账本</div>
+      <nav class="nav" id="nav">
+        <button data-v="overview" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>概览</button>
+        <button data-v="list"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>明细</button>
+        <button data-v="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>统计</button>
+        <button data-v="cats"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg>分类</button>
+      </nav>
+      <div class="nav-label" style="margin-top:20px">系统</div>
+      <nav class="nav">
+        <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 11-4 0v-.09A1.7 1.7 0 008 19.4a1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.7 1.7 0 003.6 15a1.7 1.7 0 00-1.55-1H2a2 2 0 110-4h.09A1.7 1.7 0 003.6 9a1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06A1.7 1.7 0 008 4.6a1.7 1.7 0 001-1.55V3a2 2 0 114 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06A1.7 1.7 0 0019.4 9v.01a1.7 1.7 0 001.55 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.51 1z"/></svg>设置</button>
+      </nav>
+      <div class="sidebar-foot">简记 · 桌面版 <span id="sideVer">…</span><br>数据仅存于本机</div>
+    </aside>
+    <main class="main">
+      <div class="toolbar">
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span>搜索记录…</span></div>
+        <div class="spacer"></div>
+        <div class="month-pill" id="monthPill" title="点击切换查看月份"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span id="monthLabel">…</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+        <button class="btn-primary" id="addBtn">＋ 记一笔</button>
+      </div>
+      <div class="content">
+
+        <!-- OVERVIEW -->
+        <section class="view active" id="v-overview">
+          <div class="page-head"><div><h1>概览</h1><p id="ovSub">你的收支一览</p></div><span class="badge">◈ 数据已同步</span></div>
+          <div class="stats">
+            <div class="card"><div class="k">本月支出</div><div class="v expense num"><span class="cur">¥</span>4,286.50</div><div class="d">较上月 <b class="up">↑ 8.2%</b></div></div>
+            <div class="card"><div class="k">本月收入</div><div class="v income num"><span class="cur">¥</span>12,800.00</div><div class="d">较上月 <b class="down">↑ 2.4%</b></div></div>
+            <div class="card"><div class="k">本月结余</div><div class="v num"><span class="cur">¥</span>8,513.50</div><div class="d">储蓄率 <b>66.5%</b></div></div>
+          </div>
+          <div class="grid2">
+            <div class="panel">
+              <div class="panel-head"><div><h3>收支趋势</h3><div class="sub">近 12 个月 · 收入与支出</div></div>
+                <div class="legend"><span><i style="background:var(--income)"></i>收入</span><span><i style="background:var(--expense)"></i>支出</span></div></div>
+              <svg class="chart-svg" viewBox="0 0 520 150" preserveAspectRatio="none">
+                <defs><linearGradient id="gi" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f9e6b" stop-opacity=".22"/><stop offset="1" stop-color="#2f9e6b" stop-opacity="0"/></linearGradient></defs>
+                <g stroke="var(--sep)" stroke-width="1"><line x1="0" y1="38" x2="520" y2="38"/><line x1="0" y1="80" x2="520" y2="80"/><line x1="0" y1="122" x2="520" y2="122"/></g>
+                <path d="M0,95 L47,88 L94,72 L141,80 L188,60 L235,66 L282,48 L329,55 L376,40 L423,46 L470,30 L520,36 L520,150 L0,150Z" fill="url(#gi)"/>
+                <polyline points="0,95 47,88 94,72 141,80 188,60 235,66 282,48 329,55 376,40 423,46 470,30 520,36" fill="none" stroke="#2f9e6b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                <polyline points="0,118 47,112 94,120 141,105 188,115 235,98 282,108 329,92 376,102 423,88 470,96 520,84" fill="none" stroke="#c1504a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                <circle cx="520" cy="36" r="4" fill="#2f9e6b" stroke="var(--surface)" stroke-width="2"/>
+              </svg>
+              <div class="xaxis"><span>12月</span><span>2月</span><span>4月</span><span>6月</span><span>8月</span><span>10月</span><span>11月</span></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><div><h3>支出分类</h3><div class="sub" id="donutSub">本月占比</div></div></div>
+              <div class="donut-wrap">
+                <div class="donut" style="background:conic-gradient(#4f5bd5 0 34%,#7c86ff 34% 57%,#34c759 57% 74%,#ff9500 74% 87%,#c1504a 87% 100%)">
+                  <div class="donut-center"><div><b class="num">¥4,286</b><span>总支出</span></div></div>
+                </div>
+                <div class="cat-list">
+                  <div class="cat-row"><i class="dot" style="background:#4f5bd5"></i><span class="name">餐饮美食</span><span class="amt num">1,457</span><span class="pct">34%</span></div>
+                  <div class="cat-row"><i class="dot" style="background:#7c86ff"></i><span class="name">居住物业</span><span class="amt num">986</span><span class="pct">23%</span></div>
+                  <div class="cat-row"><i class="dot" style="background:#34c759"></i><span class="name">交通出行</span><span class="amt num">729</span><span class="pct">17%</span></div>
+                  <div class="cat-row"><i class="dot" style="background:#ff9500"></i><span class="name">购物消费</span><span class="amt num">557</span><span class="pct">13%</span></div>
+                  <div class="cat-row"><i class="dot" style="background:#c1504a"></i><span class="name">其他</span><span class="amt num">557</span><span class="pct">13%</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="page-head" style="margin:4px 0 12px"><div><h1 style="font-size:var(--t1)">最近记录</h1></div><span class="link" data-go="list">查看全部 ›</span></div>
+          <div class="list-panel" id="recentList"></div>
+        </section>
+
+        <!-- LIST -->
+        <section class="view" id="v-list">
+          <div class="page-head"><div><h1>明细</h1><p>共 <span id="txCount">0</span> 笔记录 · 点击删除可移入回收站</p></div><div style="display:flex;gap:16px"><span class="link" id="purgeTrash" style="display:none;color:var(--expense)">清空回收站</span><span class="link" id="emptyTrash">回收站（0）</span></div></div>
+          <div class="chips">
+            <button class="chip on" data-f="all">全部</button><button class="chip" data-f="expense">支出</button><button class="chip" data-f="income">收入</button>
+            <button class="chip" data-f="month">本月</button><button class="chip" data-f="range">¥50 – ¥500</button>
+          </div>
+          <div class="list-panel" id="fullList"></div>
+        </section>
+
+        <!-- STATS -->
+        <section class="view" id="v-stats">
+          <div class="page-head"><div><h1>统计</h1><p>多维度的收支分析报表</p></div>
+            <div class="seg" id="segTime"><button>周</button><button class="on">月</button><button>年</button><button>近3年</button><button>近5年</button></div>
+          </div>
+          <div class="stats">
+            <div class="card"><div class="k">累计收入</div><div class="v income num"><span class="cur">¥</span>86,420</div><div class="d">近 12 个月</div></div>
+            <div class="card"><div class="k">累计支出</div><div class="v expense num"><span class="cur">¥</span>41,208</div><div class="d">近 12 个月</div></div>
+            <div class="card"><div class="k">净结余</div><div class="v num"><span class="cur">¥</span>45,212</div><div class="d">月均 <b>¥3,767</b></div></div>
+          </div>
+          <div class="panel" style="margin-bottom:20px">
+            <div class="panel-head"><div><h3>分类支出对比</h3><div class="sub">柱状图 · 含环比</div></div></div>
+            <div id="barChart"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div><h3>每日花费热力</h3><div class="sub">日历热力图 · 颜色越深花费越高</div></div></div>
+            <div class="heatgrid" id="heat"></div>
+            <div class="heatlegend">少 <i style="background:rgba(79,91,213,.08)"></i><i style="background:rgba(79,91,213,.28)"></i><i style="background:rgba(79,91,213,.55)"></i><i style="background:rgba(79,91,213,.8)"></i> 多</div>
+          </div>
+        </section>
+
+        <!-- CATEGORIES -->
+        <section class="view" id="v-cats">
+          <div class="page-head"><div><h1>分类</h1><p>预设分类 + 自定义增删改</p></div><button class="btn-primary" id="cat-new">＋ 新建</button></div>
+          <div class="panel"><div class="sub" style="margin-bottom:14px">支出分类</div><div class="catgrid" id="catGridOut"></div></div>
+          <div class="panel" style="margin-top:20px"><div class="sub" style="margin-bottom:14px">收入分类</div><div class="catgrid" id="catGridIn"></div></div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section class="view" id="v-settings">
+          <div class="page-head"><div><h1>设置</h1><p>偏好与数据管理</p></div></div>
+          <div class="settings">
+            <div class="setrow"><div class="si">◐</div><div class="st"><b>外观</b><span id="theme-desc">深浅色跟随系统</span></div><span class="link" id="theme-mode">跟随系统 ›</span></div>
+            <div class="setrow" id="row-remind"><div class="si">◔</div><div class="st"><b>每日记账提醒</b><span id="remind-desc">应用运行时每天 21:00 提醒</span></div><input type="time" id="remind-time" class="time-in" value="21:00" aria-label="提醒时间"><div class="toggle on" id="remind-toggle"></div></div>
+            <div class="setrow"><div class="si">▦</div><div class="st"><b>月度账单提醒</b><span>暂未开放（需周期收支能力）</span></div><span class="link" style="color:var(--label3);cursor:default">未开放</span></div>
+            <div class="setrow"><div class="si">↻</div><div class="st"><b>自动云同步</b><span>暂未开放（需云开发环境）</span></div><span class="link" style="color:var(--label3);cursor:default">未开放</span></div>
+            <div class="setrow" id="row-export"><div class="si">⤓</div><div class="st"><b>数据导出与恢复</b><span>CSV 表格 · JSON 备份 / 导入</span></div><div style="display:flex;gap:14px"><span class="link" id="export-csv">CSV ›</span><span class="link" id="export-json">备份 ›</span><span class="link" id="import-json">导入 ›</span></div></div>
+            <div class="setrow" id="row-upd-version"><div class="si">ⓘ</div><div class="st"><b>当前版本</b><span id="upd-curver">简记</span></div><span class="link" id="upd-version">…</span></div>
+            <div class="setrow" id="row-upd-check"><div class="si">↻</div><div class="st"><b>检查更新</b><span id="upd-status">自动下载并静默安装新版本</span></div><span class="link" id="upd-check">立即检查 ›</span></div>
+            <div class="setrow" id="row-upd-auto"><div class="si">◔</div><div class="st"><b>自动检查更新</b><span>启动时在后台检查，发现新版再询问</span></div><div class="toggle" id="upd-auto"></div></div>
+            <div class="setrow" id="row-upd-src"><div class="si">⇅</div><div class="st"><b>更新下载源</b><span>官方 GitHub / 国内镜像</span></div><span class="link" id="upd-src">自动 ›</span></div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+</div>
+</div>
+
+<!-- ADD SHEET -->
+<div class="backdrop" id="backdrop">
+  <div class="sheet">
+    <h2 id="sheet-title">记一笔</h2>
+    <div class="seg" id="segType"><button class="on">支出</button><button>收入</button></div>
+    <div class="amount-box"><span class="cur">¥</span><input id="amt" class="amt-in num" type="text" inputmode="decimal" maxlength="8" autocomplete="off" spellcheck="false" value="0" aria-label="金额"></div>
+    <div class="pickcat" id="pickcat"></div>
+    <input type="date" class="note-in" id="tx-date" aria-label="记账日期">
+    <input class="note-in" id="note" placeholder="备注：这笔钱花在哪里？">
+    <div class="sheet-actions">
+      <button type="button" class="btn-photo" id="btnPhoto" style="flex:0 0 76px">▣ 小票</button>
+      <button type="button" class="btn-del-op" id="btnEditDel" style="display:none">删除</button>
+      <button type="button" class="btn-done" id="btnDone">完成</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="upd-modal">
+  <div class="modal-box">
+    <div class="modal-title">发现新版本</div>
+    <div class="modal-msg" id="upd-modal-msg"></div>
+    <div class="modal-btns">
+      <button class="modal-btn ghost" id="upd-modal-cancel">稍后</button>
+      <button class="modal-btn primary" id="upd-modal-ok">立即更新</button>
+    </div>
+  </div>
+</div>
+<!-- 通用自绘确认框（删除/清空/搜索输入复用；WebView2 下原生 confirm/prompt 不可靠） -->
+<div class="modal-mask" id="confirm-modal">
+  <div class="modal-box">
+    <div class="modal-title" id="cf-title">确认</div>
+    <div class="modal-msg" id="cf-msg"></div>
+    <input class="modal-input" id="cf-input" style="display:none" autocomplete="off">
+    <div class="modal-btns">
+      <button class="modal-btn ghost" id="cf-cancel">取消</button>
+      <button class="modal-btn primary" id="cf-ok">确定</button>
+    </div>
+  </div>
+</div>
+<!-- 分类编辑/新建弹窗 -->
+<div class="backdrop" id="cat-modal">
+  <div class="sheet">
+    <h2 id="cat-modal-title">编辑分类</h2>
+    <div class="seg" id="cat-kind" style="display:flex;margin:14px auto 18px;width:max-content"><button class="on" data-k="expense">支出</button><button data-k="income">收入</button></div>
+    <input class="note-in" id="cat-name" placeholder="分类名称" maxlength="12" autocomplete="off">
+    <div class="cat-form-row"><span class="cat-form-label">图标</span><div class="cat-icons" id="cat-icons"></div></div>
+    <div class="cat-form-row"><span class="cat-form-label">颜色</span><div class="cat-colors" id="cat-colors"></div></div>
+    <div class="sheet-actions">
+      <button type="button" class="btn-del-op" id="cat-del" style="display:none">删除</button>
+      <button type="button" class="btn-done" id="cat-save">保存</button>
+    </div>
+    <button type="button" class="sheet-cancel" id="cat-cancel">取消</button>
+  </div>
+</div>
+<!-- 小票图片查看（点击明细行缩略图打开） -->
+<div class="modal-mask" id="receipt-modal">
+  <div class="modal-box" style="width:auto;max-width:92vw;background:var(--surface);padding:14px">
+    <img id="receipt-img" alt="小票图片" style="max-width:min(760px,86vw);max-height:70vh;border-radius:10px;display:block">
+    <div class="modal-btns" style="margin-top:12px">
+      <button class="modal-btn ghost" id="receipt-close">关闭</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast">已记录</div>
+
+<script src="app.js"></script>
+</body>
+</html>

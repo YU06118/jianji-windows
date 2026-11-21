@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "简记",
+  "version": "0.1.8",
+  "identifier": "com.jianji.ledger",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": null,
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "简记",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.ico"],
+    "copyright": "简记",
+    "category": "Finance",
+    "shortDescription": "轻奢简洁的个人记账工具",
+    "longDescription": "简记是一款遵循 Apple HIG 设计语言的个人记账桌面应用，支持收支记录、分类管理、统计报表与多通道备份同步。"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMzA5MjZFMEFFN0E2QTQKUldTa3B1Y0ticEl3YTVocWU0bDBhOGV2TUJiZnRsTVFOU0dOTDdjZWJmZTloSWFwbFFyMTJRZjEK",
+      "endpoints": [
+        "https://github.com/YU06118/jianji/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
