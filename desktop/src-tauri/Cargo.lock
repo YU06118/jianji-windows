@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "jianji-desktop"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rusqlite",

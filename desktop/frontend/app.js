@@ -97,9 +97,11 @@
 
   /* ================= 页面路由（替代 tabBar + navigateTo） ================= */
   let curPage = 'index'
+  let setSec = 'appearance'
   function goto(page) {
     if (page === curPage) return
     curPage = page
+    document.body.dataset.page = page
     document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === page))
     const sec = $('page-' + page)
     document.querySelectorAll('#app > .page').forEach(p => { p.hidden = p.id !== 'page-' + page })
@@ -1122,6 +1124,30 @@
     })
     const total = M.parse(s.budget.total)
     $('set-budgettext').textContent = total > 0 ? '¥' + M.fmt(total) + ' / 月' : '未设置'
+    bindSetNav()
+  }
+
+  /* 设置页左侧分区导航：单分区显示，会话内记住上次选择 */
+  function bindSetNav() {
+    const navs = document.querySelectorAll('.set-nav')
+    if (!navs.length) return
+    navs.forEach(b => {
+      b.classList.toggle('on', b.dataset.sec === setSec)
+      b.onclick = () => {
+        setSec = b.dataset.sec
+        navs.forEach(x => x.classList.toggle('on', x.dataset.sec === setSec))
+        document.querySelectorAll('.set-pane').forEach(p => {
+          const on = p.dataset.pane === setSec
+          p.hidden = !on
+          if (on) {
+            p.classList.remove('page-fade')
+            void p.offsetWidth
+            p.classList.add('page-fade')
+          }
+        })
+      }
+    })
+    document.querySelectorAll('.set-pane').forEach(p => { p.hidden = p.dataset.pane !== setSec })
   }
 
   async function doBackup() {
@@ -1220,7 +1246,7 @@
       if (IN_TAURI && window.__TAURI__ && window.__TAURI__.app && window.__TAURI__.app.getVersion) {
         window.__TAURI__.app.getVersion().then(function (v) {
           const el = document.getElementById('about-ver')
-          if (el && v) el.textContent = 'v' + v + ' · Windows 桌面端'
+          if (el && v) el.textContent = 'v' + v
         }).catch(function () { })
       }
     } catch (e) { /* 非 Tauri 环境忽略 */ }
@@ -1338,6 +1364,7 @@
     }
 
     /* 启动页 */
+    document.body.dataset.page = 'index'
     render('index')
   }
 
