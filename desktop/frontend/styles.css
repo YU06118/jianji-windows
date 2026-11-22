@@ -8,7 +8,7 @@
 :root {
   --rpx: 0.6px;
   --content-w: calc(750 * var(--rpx));
-  --set-w: min(1080px, calc(100vw - 2 * var(--sp-gutter)));
+  --page-w: min(1080px, calc(100vw - 2 * var(--sp-gutter)));
 }
 
 /* ---------- 滚动条：透明轨道 + 深浅色胶囊滑块（WebView2 默认滚动条过重） ----------
@@ -16,6 +16,7 @@
  * 所以把滚动容器从根元素挪到 body：body 成为普通滚动容器后，轨道才能真正透出页面背景。 */
 html { overflow: hidden; }
 body { height: 100vh; overflow-y: auto; overflow-x: hidden; }
+[hidden] { display: none !important; }
 :root { --sb-thumb: rgba(60, 60, 67, .24); --sb-thumb-hover: rgba(60, 60, 67, .45); color-scheme: light; }
 html:has(body.mode-dark) { --sb-thumb: rgba(235, 235, 245, .26); --sb-thumb-hover: rgba(235, 235, 245, .48); color-scheme: dark; }
 body.mode-dark { --sb-thumb: rgba(235, 235, 245, .26); --sb-thumb-hover: rgba(235, 235, 245, .48); }
@@ -224,14 +225,13 @@ body {
   box-shadow: 0 6px 24px rgba(0, 0, 0, .14), inset 0 1px 0 var(--glass-inner);
 }
 .topnav-inner {
-  width: var(--content-w);
+  width: var(--page-w);
   margin: 0 auto;
   display: flex;
   gap: calc(8 * var(--rpx));
   padding: calc(10 * var(--rpx)) 0;
   transition: width var(--dur) var(--ease);
 }
-body[data-page="settings"] .topnav-inner { width: var(--set-w); }
 .nav-item {
   flex: 1;
   height: calc(64 * var(--rpx));
@@ -248,7 +248,7 @@ body[data-page="settings"] .topnav-inner { width: var(--set-w); }
 /* ===================== 布局 ===================== */
 #app { padding-top: calc(84 * var(--rpx)); }
 .page {
-  width: var(--content-w);
+  width: var(--page-w);
   margin: 0 auto;
   min-height: calc(100vh - 84 * var(--rpx));
   padding-bottom: calc(60 * var(--rpx));
@@ -258,7 +258,7 @@ body[data-page="settings"] .topnav-inner { width: var(--set-w); }
 }
 .add-page { height: auto; overflow: visible; position: relative; z-index: 0; }
 .page { position: relative; z-index: 0; }
-.page-settings { width: var(--set-w); }
+.page-settings { width: var(--page-w); }
 body.mode-dark {
   background-color: #16151D;
   background-image:
@@ -267,7 +267,76 @@ body.mode-dark {
     radial-gradient(44% 38% at 82% 92%, rgba(20, 180, 120, .13), transparent 70%);
   background-attachment: fixed;
 }
-.wrap { padding: 0 var(--sp-gutter); width: var(--content-w); }
+.wrap { padding: 0; width: 100%; }
+
+/* ===================== 横向页面布局 ===================== */
+#page-index {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+#page-index > .hero { grid-column: 1; grid-row: 1 / span 2; height: 100%; margin: 0; }
+#page-index .idx-quick { grid-column: 2; grid-row: 1; }
+#page-index .idx-stats { grid-column: 2; grid-row: 2; }
+#page-index .idx-how, #page-index > .foot-tip { grid-column: 1 / -1; }
+#page-index .idx-quick .q-add { margin-top: 0; }
+#page-index .idx-stats .stat-row { margin: 0; }
+
+#page-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
+#page-stats > .month-bar { grid-column: 1 / -1; }
+#page-stats > .wrap:last-child { grid-column: 1 / -1; }
+
+#page-budget {
+  display: grid;
+  grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+#page-budget > .tip-box { grid-column: 1; align-self: start; }
+
+#page-goal {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+#page-goal > .hero { margin: 0; }
+
+#page-me {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+#page-me > .head-card { margin: 0; }
+
+#page-add {
+  display: grid;
+  grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+#page-index .card, #page-stats .card, #page-budget .card,
+#page-goal .card, #page-me .card { margin-bottom: 0; }
+#page-me .group { margin-bottom: 0; }
+#page-add .head { border-radius: var(--r-card-lg); box-shadow: var(--sh-card); }
+#page-add .mid { min-width: 0; }
+#page-add .mid .stat-row { margin: 0 0 var(--sp-4); }
+#page-goal #gl-list { min-width: 0; }
+
+@media (max-width: 900px) {
+  #page-index, #page-stats, #page-budget, #page-goal, #page-me, #page-add { grid-template-columns: 1fr; }
+  #page-index > .hero { grid-column: auto; grid-row: auto; height: auto; }
+  #page-index .idx-quick, #page-index .idx-stats,
+  #page-index .idx-how, #page-index > .foot-tip { grid-column: auto; grid-row: auto; }
+}
 .row { display: flex; align-items: center; }
 .row-between { display: flex; align-items: center; justify-content: space-between; }
 .row-center { display: flex; align-items: center; justify-content: center; }
