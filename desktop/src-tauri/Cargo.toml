@@ -1,6 +1,6 @@
 [package]
 name = "jianji-desktop"
-version = "0.1.8"
+version = "0.2.0"
 description = "简记 · 个人记账桌面端"
 authors = ["jianji"]
 edition = "2021"
