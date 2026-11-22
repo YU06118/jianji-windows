@@ -80,6 +80,13 @@
   /* ================= 外观（主题 + 深浅模式） ================= */
   function applyAppearance() {
     document.body.className = store.modeClass() + ' ' + store.themeClass()
+    /* Windows 原生窗口标题栏跟随深浅色（Tauri v2 setTheme；失败静默） */
+    try {
+      if (IN_TAURI && window.__TAURI__ && window.__TAURI__.window) {
+        const p = window.__TAURI__.window.getCurrentWindow().setTheme(document.body.classList.contains('mode-dark') ? 'dark' : 'light')
+        if (p && p.catch) p.catch(function () { })
+      }
+    } catch (e) { /* 非 Tauri 环境忽略 */ }
   }
   /* 跟随系统时监听系统主题变化（与小程序 wx.onThemeChange 单向驱动一致） */
   try {
@@ -100,7 +107,8 @@
     sec.classList.remove('page-fade')
     void sec.offsetWidth
     sec.classList.add('page-fade')
-    window.scrollTo(0, 0)
+    document.body.scrollTop = 0
+    document.documentElement.scrollTop = 0
     render(page)
   }
   function renderAdd() { resetAdd() }
@@ -1206,6 +1214,16 @@
     })
     await store.init()
     applyAppearance()
+
+    /* 关于页版本号与实际包版本对齐 */
+    try {
+      if (IN_TAURI && window.__TAURI__ && window.__TAURI__.app && window.__TAURI__.app.getVersion) {
+        window.__TAURI__.app.getVersion().then(function (v) {
+          const el = document.getElementById('about-ver')
+          if (el && v) el.textContent = 'v' + v + ' · Windows 桌面端'
+        }).catch(function () { })
+      }
+    } catch (e) { /* 非 Tauri 环境忽略 */ }
 
     /* meta：记录打开次数（与小程序一致） */
     const meta = store.getMeta()

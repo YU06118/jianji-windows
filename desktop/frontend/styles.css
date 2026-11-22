@@ -10,6 +10,21 @@
   --content-w: calc(750 * var(--rpx));
 }
 
+/* ---------- 滚动条：透明轨道 + 深浅色胶囊滑块（WebView2 默认滚动条过重） ----------
+ * 根元素滚动条的 transparent 背景会被 Chromium 替换成系统底色（深色=黑条、浅色=白条），
+ * 所以把滚动容器从根元素挪到 body：body 成为普通滚动容器后，轨道才能真正透出页面背景。 */
+html { overflow: hidden; }
+body { height: 100vh; overflow-y: auto; overflow-x: hidden; }
+:root { --sb-thumb: rgba(60, 60, 67, .24); --sb-thumb-hover: rgba(60, 60, 67, .45); color-scheme: light; }
+html:has(body.mode-dark) { --sb-thumb: rgba(235, 235, 245, .26); --sb-thumb-hover: rgba(235, 235, 245, .48); color-scheme: dark; }
+body.mode-dark { --sb-thumb: rgba(235, 235, 245, .26); --sb-thumb-hover: rgba(235, 235, 245, .48); }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--sb-thumb); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; min-height: 44px; }
+::-webkit-scrollbar-thumb:hover { background: var(--sb-thumb-hover); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 body {
   margin: 0;
   min-height: 100vh;
