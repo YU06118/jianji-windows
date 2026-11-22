@@ -43,7 +43,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMzA5MjZFMEFFN0E2QTQKUldTa3B1Y0JricEl3YTVocWU0bDBhOGV2TUJiZnRsTVFOU0dOTDdjZWJmZTloSWFwbFFyMTJRZjEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWgnIHB1YmxpYyBrZXk6IDZCMzA5MjZFMEFFN0E2QTQKUldTa3B1Y0JicEl3YTVocWU0bDBhOGV2TUJiZnRsTVFOU0dOTDdjZWJmZTloSWFwbFFyMTJRZjEK",
       "endpoints": [
         "https://github.com/YU06118/jianji-windows/releases/latest/download/latest.json"
       ],
