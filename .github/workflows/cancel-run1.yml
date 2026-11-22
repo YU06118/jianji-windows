@@ -1,0 +1,22 @@
+name: Cancel stale release run
+on:
+  push:
+    branches: ['cancel-run1']
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel bad run ea259ba
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=20" --jq '.workflow_runs[] | select(.head_sha=="ea259bad1ad31340201854657557d315391643ea") | .id' | head -n1)
+          echo "bad run id: $RUN_ID"
+          if [ -n "$RUN_ID" ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/cancel"
+          else
+            echo "no matching run"
+          fi
