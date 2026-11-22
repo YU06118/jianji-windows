@@ -1,6 +1,6 @@
 # 简记 · GitHub 仓库说明与上传流程
 
-> 仓库：https://github.com/YU06118/jianji ｜ 主分支：`main` ｜ 更新：2026-11-17
+> 仓库：https://github.com/YU06118/jianji-windows ｜ 主分支：`main` ｜ 更新：2026-11-22（原整合仓库 `jianji` 已更名为 `jianji-android`，历史 Windows 发版经重定向保留）
 
 ## 一、仓库现状
 
@@ -53,7 +53,7 @@ CI（约 10 分钟）自动完成：
 4. （已配置 COS Secrets 时）同步安装包与 latest.json 到腾讯云 COS 镜像
 
 验收检查：
-- `https://github.com/YU06118/jianji/releases/latest/download/latest.json` 可访问，且 `platforms["windows-x86_64"].url` 指向 NSIS 安装包
+- `https://github.com/YU06118/jianji/releases/latest/download/latest.json` 可访问（该地址现重定向至 `jianji-android`，历史发版随其保留），且 `platforms["windows-x86_64"].url` 指向 NSIS 安装包；本仓库首次发版后应同步把应用内置端点切换为 `YU06118/jianji-windows`
 - 已装旧版应用"设置 → 检查更新"能走完整更新流程
 
 ## 五、Secrets 清单（仓库 Settings → Secrets and variables → Actions）

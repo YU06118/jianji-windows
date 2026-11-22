@@ -2,7 +2,8 @@
 
 家庭记账工具「简记」的 Windows 桌面端，基于 **Tauri v2 + SQLite** 构建，数据完全存本机。
 
-> 本仓库从原整合仓库 `YU06118/jianji` 拆分而来（原仓库已归档）。微信小程序端见 [`YU06118/jianji-miniprogram`](https://github.com/YU06118/jianji-miniprogram)。
+> 本仓库从原整合仓库拆分而来；该整合仓库现为 [`YU06118/jianji-android`](https://github.com/YU06118/jianji-android)（Android 端），历史 Windows 发版 v0.1.2–v0.1.8 与 `latest.json` 仍随其 Releases 保留，原链接经 GitHub 重定向继续可用。
+> 四端总导航（文档集合与直达）：[`YU06118/jianji`](https://github.com/YU06118/jianji)。微信小程序端（主端）：[`YU06118/jianji-miniprogram`](https://github.com/YU06118/jianji-miniprogram)；macOS 端：[`YU06118/jianji-macos`](https://github.com/YU06118/jianji-macos)；Android 端（骨架）：[`YU06118/jianji-android`](https://github.com/YU06118/jianji-android)。
 
 ## 功能概览
 
