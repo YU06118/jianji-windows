@@ -921,7 +921,7 @@
       '<span class="hero-label">已经攒下</span>' +
       '<div class="hero-num"><span class="hero-cur">¥</span><span class="hero-amt num">' + esc(M.fmt(M.toYuan(savedCents))) + '</span></div>' +
       '<div class="hero-sub">' + (goals.length ? '目标总额 ¥' + esc(M.fmt(M.toYuan(targetCents))) + ' · 完成 ' + totalPct + '%' : '给未来的自己定一个目标吧') + '</div>' +
-      '<div class="hero-bar"><div class="bar"><div class="bar-fill" style="width:' + Math.min(100, totalPct) + '%;background:#FFFFFF"></div></div></div>'
+      '<div class="hero-bar"><div class="bar"><div class="bar-fill" style="width:' + Math.min(100, totalPct) + '%"></div></div></div>'
 
     let html = ''
     goals.forEach((g, i) => {
