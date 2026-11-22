@@ -228,13 +228,13 @@
     <!-- ================= 设置 ================= -->
     <section class="page page-settings" id="page-settings" hidden>
       <div class="set-shell">
-        <aside class="set-side">
-          <button class="set-nav on" type="button" data-sec="appearance"><span class="sn-ico">🌗</span><span class="sn-t">外观</span></button>
-          <button class="set-nav" type="button" data-sec="ledger"><span class="sn-ico">🎯</span><span class="sn-t">记账</span></button>
-          <button class="set-nav" type="button" data-sec="data"><span class="sn-ico">📤</span><span class="sn-t">数据工具</span></button>
-          <button class="set-nav" type="button" data-sec="help"><span class="sn-ico">❓</span><span class="sn-t">使用与维护</span></button>
-          <button class="set-nav" type="button" data-sec="about"><span class="sn-ico">ℹ️</span><span class="sn-t">关于</span></button>
-        </aside>
+        <nav class="set-tabs" role="tablist" aria-label="设置分区">
+          <button class="set-nav on" type="button" role="tab" data-sec="appearance"><span class="sn-ico">🌗</span><span class="sn-t">外观</span></button>
+          <button class="set-nav" type="button" role="tab" data-sec="ledger"><span class="sn-ico">🎯</span><span class="sn-t">记账</span></button>
+          <button class="set-nav" type="button" role="tab" data-sec="data"><span class="sn-ico">📤</span><span class="sn-t">数据工具</span></button>
+          <button class="set-nav" type="button" role="tab" data-sec="help"><span class="sn-ico">❓</span><span class="sn-t">使用与维护</span></button>
+          <button class="set-nav" type="button" role="tab" data-sec="about"><span class="sn-ico">ℹ️</span><span class="sn-t">关于</span></button>
+        </nav>
 
         <div class="set-body">
           <section class="set-pane" data-pane="appearance">
@@ -242,11 +242,15 @@
               <h2 class="pane-t">外观</h2>
               <p class="pane-s">深浅色模式与主题色，改完立即生效</p>
             </div>
-            <div class="group">
-              <div class="cell no-tap"><span class="c-ico">🌗</span><span class="c-t">外观模式</span></div>
-              <div class="seg-appear" id="set-appearance"></div>
-              <div class="cell no-tap"><span class="c-ico">🎨</span><span class="c-t">主题色</span><span class="c-v" id="set-themename"></span></div>
-              <div class="theme-row" id="set-themes"></div>
+            <div class="pane-grid">
+              <div class="group">
+                <div class="cell no-tap"><span class="c-ico">🌗</span><span class="c-t">外观模式</span></div>
+                <div class="seg-appear" id="set-appearance"></div>
+              </div>
+              <div class="group">
+                <div class="cell no-tap"><span class="c-ico">🎨</span><span class="c-t">主题色</span><span class="c-v" id="set-themename"></span></div>
+                <div class="theme-row" id="set-themes"></div>
+              </div>
             </div>
           </section>
 
@@ -268,15 +272,19 @@
               <h2 class="pane-t">数据工具</h2>
               <p class="pane-s">数据只在本机，换电脑前先备份</p>
             </div>
-            <div class="group">
-              <button class="cell" id="set-backup">
-                <span class="c-ico">📤</span><span class="c-t">备份数据</span>
-                <span class="c-sub">复制到剪贴板</span><span class="c-go">›</span>
-              </button>
-              <button class="cell" id="set-restore">
-                <span class="c-ico">📥</span><span class="c-t">恢复数据</span>
-                <span class="c-sub">粘贴备份文本</span><span class="c-go">›</span>
-              </button>
+            <div class="pane-grid">
+              <div class="group">
+                <button class="cell" id="set-backup">
+                  <span class="c-ico">📤</span><span class="c-t">备份数据</span>
+                  <span class="c-sub">复制到剪贴板</span><span class="c-go">›</span>
+                </button>
+              </div>
+              <div class="group">
+                <button class="cell" id="set-restore">
+                  <span class="c-ico">📥</span><span class="c-t">恢复数据</span>
+                  <span class="c-sub">粘贴备份文本</span><span class="c-go">›</span>
+                </button>
+              </div>
             </div>
           </section>
 
@@ -285,28 +293,30 @@
               <h2 class="pane-t">使用与维护</h2>
               <p class="pane-s">新手引导、示例数据与重置</p>
             </div>
-            <div class="group">
-              <button class="cell" id="set-seed">
-                <span class="c-ico">🧪</span><span class="c-t">填一份示例数据</span>
-                <span class="c-sub">看看用起来什么样</span><span class="c-go">›</span>
-              </button>
-              <button class="cell" id="set-how">
-                <span class="c-ico">❓</span><span class="c-t">怎么用</span>
-                <span class="pill pill-brand how-badge">新手必读</span>
-                <span class="c-go how-go" id="set-howcaret">›</span>
-              </button>
-              <div class="how" id="set-howbody" hidden>
-                <div class="how-line"><span class="how-n">1 ·</span> 点「记一笔」，输金额 → 选分类 → 完成。备注里写「菜市场」，分类会自动跳过去。</div>
-                <div class="how-line"><span class="how-n">2 ·</span> 记过两次的东西会自动变成常用标签，以后点一下就记好了。</div>
-                <div class="how-line"><span class="how-n">3 ·</span> 首页最上面是「本月还能花多少」。花超了会提前提醒你，不用等到月底才发现。</div>
-                <div class="how-line"><span class="how-n">4 ·</span> 数据只存在这台电脑上，不上传也不联网。换电脑前记得先「备份数据」。</div>
+            <div class="pane-grid">
+              <div class="group">
+                <button class="cell" id="set-seed">
+                  <span class="c-ico">🧪</span><span class="c-t">填一份示例数据</span>
+                  <span class="c-sub">看看用起来什么样</span><span class="c-go">›</span>
+                </button>
+                <button class="cell" id="set-how">
+                  <span class="c-ico">❓</span><span class="c-t">怎么用</span>
+                  <span class="pill pill-brand how-badge">新手必读</span>
+                  <span class="c-go how-go" id="set-howcaret">›</span>
+                </button>
+                <div class="how" id="set-howbody" hidden>
+                  <div class="how-line"><span class="how-n">1 ·</span> 点「记一笔」，输金额 → 选分类 → 完成。备注里写「菜市场」，分类会自动跳过去。</div>
+                  <div class="how-line"><span class="how-n">2 ·</span> 记过两次的东西会自动变成常用标签，以后点一下就记好了。</div>
+                  <div class="how-line"><span class="how-n">3 ·</span> 首页最上面是「本月还能花多少」。花超了会提前提醒你，不用等到月底才发现。</div>
+                  <div class="how-line"><span class="how-n">4 ·</span> 数据只存在这台电脑上，不上传也不联网。换电脑前记得先「备份数据」。</div>
+                </div>
               </div>
-            </div>
-            <div class="group">
-              <button class="cell danger" id="set-clear">
-                <span class="c-ico">🗑</span><span class="c-t">清空所有数据</span>
-                <span class="c-sub">不可恢复</span><span class="c-go">›</span>
-              </button>
+              <div class="group">
+                <button class="cell danger" id="set-clear">
+                  <span class="c-ico">🗑</span><span class="c-t">清空所有数据</span>
+                  <span class="c-sub">不可恢复</span><span class="c-go">›</span>
+                </button>
+              </div>
             </div>
           </section>
 
