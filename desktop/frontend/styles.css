@@ -731,9 +731,17 @@ body.mode-dark {
 .bars-foot { display: flex; align-items: center; justify-content: space-between; font-size: calc(24 * var(--rpx)); color: var(--ink-2); margin-top: calc(10 * var(--rpx)); }
 
 /* 最近记录 */
-.rec { display: flex; align-items: center; padding: var(--sp-3) 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.rec {
+  display: flex; align-items: center;
+  margin: 0 calc(-1 * var(--sp-2));
+  padding: var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
 .rec:last-child { border-bottom: none; }
-.rec:hover { opacity: 0.75; }
+.rec:hover { background: var(--bg-2); }
 .rec-ico { width: calc(84 * var(--rpx)); height: calc(84 * var(--rpx)); border-radius: var(--r-card); background: var(--bg-2); display: flex; align-items: center; justify-content: center; margin-right: calc(20 * var(--rpx)); flex-shrink: 0; }
 .rec-ico img { width: calc(44 * var(--rpx)); height: calc(44 * var(--rpx)); }
 .rec-mid { flex: 1; min-width: 0; }
@@ -741,6 +749,28 @@ body.mode-dark {
 .rec-sub { font-size: var(--fs-caption); color: var(--ink-3); margin-top: var(--sp-1); }
 .rec-amt { font-size: calc(36 * var(--rpx)); font-weight: 700; color: var(--ink); margin-left: var(--sp-3); flex-shrink: 0; }
 .rec-amt.income { color: var(--mint); }
+.rec-del {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(48 * var(--rpx));
+  height: calc(48 * var(--rpx));
+  margin-left: var(--sp-2);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-3);
+  opacity: .55;
+  transition: opacity var(--dur) var(--ease), background-color var(--dur) var(--ease),
+              color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.rec-del svg { display: block; width: calc(24 * var(--rpx)); height: calc(24 * var(--rpx)); }
+.rec:hover .rec-del { opacity: 1; }
+.rec-del:hover { background: var(--danger-soft); color: var(--danger); }
+.rec-del:active { transform: scale(.9); }
+.rec-del:focus-visible { opacity: 1; outline: 2px solid var(--pink); outline-offset: 2px; }
 .rec-hint { text-align: center; font-size: calc(22 * var(--rpx)); color: var(--ink-3); padding-top: calc(22 * var(--rpx)); }
 .foot-tip { text-align: center; font-size: calc(22 * var(--rpx)); color: var(--ink-3); padding: calc(34 * var(--rpx)) calc(40 * var(--rpx)) calc(30 * var(--rpx)); line-height: 1.6; }
 .rec:nth-child(1) { animation: fade-in var(--dur) var(--ease) both; }

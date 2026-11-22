@@ -226,7 +226,9 @@
         '<div class="rec-mid"><div class="rec-note">' + esc(r.note || r.catName) + '</div>' +
         '<div class="rec-sub">' + esc(r.when) + ' · ' + esc(r.catName) + '</div></div>' +
         '<span class="rec-amt num ' + (r.type === 'income' ? 'income' : '') + '">' + (r.type === 'income' ? '+' : '-') + '¥' + esc(r.amountText) + '</span>' +
-        '<button class="rec-del" data-del="1" title="删除">✕</button>' +
+        '<button class="rec-del" data-del="1" title="删除" aria-label="删除">' +
+          '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6"/></svg>' +
+        '</button>' +
         '</div>'
       ).join('') + '<div class="rec-hint">点击可以改，点 ✕ 可以删</div>'
       $('idx-recent').querySelectorAll('.rec').forEach(row => {
