@@ -1,8 +1,8 @@
 name: Release
-# 临时分支触发用于 v0.2.0 首次发布；构建成功后恢复为 v* tag 触发
+# 推送 v* 标签触发：构建 → minisign 签名 → 创建 Release（含 latest.json）→ 同步腾讯 COS 镜像
 on:
   push:
-    branches: ['release/v0.2.0']
+    tags: ['v*']
 
 permissions:
   contents: write
