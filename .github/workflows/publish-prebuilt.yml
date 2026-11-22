@@ -1,0 +1,40 @@
+name: Publish prebuilt v0.2.0
+on:
+  push:
+    branches: ['publish-v0.2.0']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify artifacts
+        run: |
+          set -euo pipefail
+          curl -fL 'https://aka.doubaocdn.com/s/5n0DjQSGXp' -o jianji_0.2.0_x64-setup.exe
+          curl -fL 'https://aka.doubaocdn.com/s/MYVIezubuV' -o jianji_0.2.0_x64-setup.exe.sig
+          curl -fL 'https://aka.doubaocdn.com/s/C4kjY09Xmj' -o latest.json
+          curl -fL 'https://aka.doubaocdn.com/s/HBPHKnM7RX' -o SHA256SUMS.txt
+          test -s jianji_0.2.0_x64-setup.exe
+          test -s jianji_0.2.0_x64-setup.exe.sig
+          python3 - <<'PY'
+          import json, hashlib
+          d = json.load(open('latest.json', encoding='utf-8'))
+          assert d['version'] == '0.2.0', d
+          w = d['platforms']['windows-x86_64']
+          assert w['url'].endswith('/v0.2.0/jianji_0.2.0_x64-setup.exe'), w
+          h = hashlib.sha256(open('jianji_0.2.0_x64-setup.exe','rb').read()).hexdigest().upper()
+          print('sha256', h)
+          assert h in open('SHA256SUMS.txt', encoding='utf-8').read().upper()
+          print('artifacts verified')
+          PY
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v0.2.0 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title '简记 v0.2.0' \
+            --notes '简记 Windows v0.2.0：前端与小程序 1.0.3 对齐；修复自动更新端点指向 jianji-windows，旧版客户端可正常检查更新。安装包 SHA256 见 SHA256SUMS.txt。' \
+            jianji_0.2.0_x64-setup.exe jianji_0.2.0_x64-setup.exe.sig latest.json SHA256SUMS.txt
