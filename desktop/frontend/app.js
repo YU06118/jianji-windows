@@ -1,927 +1,1338 @@
-/* 简记 · 桌面端前端逻辑
- * 运行在 Tauri WebView 中：数据走 Rust 命令 → 本机 SQLite（Q20）
- * 独立浏览器打开时：自动降级到 localStorage，便于无 Rust 环境预览
- * 金额口径与 shared/core.js 一致：内部用「分」整数运算
+/* 简记 · Windows 桌面端（Tauri v2）
+ * 小程序 main@264ede1 的 1:1 功能移植：
+ *   首页(hero 预算态+记一笔弹窗+常用档位+近7天+最近记录+新手必读) /
+ *   记一笔(类型切换+自动猜分类+今日概览三格) /
+ *   统计(月份切换+两级年月选择器+环形图+分类排行展开+分项预算+近6月趋势) /
+ *   预算(总额+分项+历史填充+快捷建议) / 目标(编辑+存取) / 我的 / 设置(外观主题+备份恢复+示例+清空)
+ * 数据层见 js/mp-core.js（SQLite + settings KV，备份格式与小程序互通）。
  */
 (function () {
   'use strict'
-  const IN_TAURI = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
-  const invoke = IN_TAURI
-    ? (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {})
-    : async () => { throw new Error('not tauri') }
-
-  // ---------- 金额与工具 ----------
-  const toCents = y => Math.round((Number(y) || 0) * 100)
-  const toYuan = c => Math.round(c) / 100
-  const sumYuan = list => toYuan(list.reduce((a, b) => a + toCents(b), 0))
-  const money = n => '¥ ' + (Number(n) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  const uid = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-  const fmt2 = n => (Number(n) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  let catColor = {}
-
-  // ---------- 设置读写（顶层共用；浏览器降级用 localStorage）----------
-  const getSet = async k => {
-    if (!IN_TAURI) { try { return localStorage.getItem('jianji_set_' + k) } catch (e) { return null } }
-    try { return await invoke('get_setting', { key: k }) } catch (e) { return null }
+  window.onerror = function (msg, src, line, col) {
+    /* WebView2 无控制台，出错时至少在 console 留痕（发布版静默） */
+    if (window.console) console.error('[jianji]', msg, '@' + (src || '').split('/').pop() + ':' + line + ':' + col)
+    return false
   }
-  const setSet = (k, v) => IN_TAURI
-    ? invoke('set_setting', { key: k, value: String(v) })
-    : Promise.resolve().then(() => localStorage.setItem('jianji_set_' + k, String(v)))
+  const { M, D, C, S, store, IN_TAURI, uid } = window.JJ
 
-  // ---------- 自绘确认/输入框（WebView2 下原生 confirm/prompt 不可靠）----------
+  /* ================= 基础工具 ================= */
+  const $ = id => document.getElementById(id)
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
+  let toastTimer = null
+  function toast(title) {
+    const t = $('toast')
+    t.textContent = title
+    t.classList.add('show')
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => t.classList.remove('show'), 1800)
+  }
+
+  /* 自绘确认弹窗（WebView2 下原生 confirm 不可靠） */
   function askConfirm(title, msg, opts) {
     opts = opts || {}
     return new Promise(resolve => {
-      const mask = document.getElementById('confirm-modal')
-      if (!mask) { resolve(opts.input ? null : false); return }
-      document.getElementById('cf-title').textContent = title
-      document.getElementById('cf-msg').textContent = msg
-      const input = document.getElementById('cf-input')
-      if (opts.input) { input.style.display = ''; input.value = opts.inputValue || ''; input.placeholder = opts.input || '' }
-      else { input.style.display = 'none'; input.value = '' }
-      const ok = document.getElementById('cf-ok'), cancel = document.getElementById('cf-cancel')
+      const mask = $('confirm-modal')
+      $('cf-title').textContent = title
+      $('cf-msg').textContent = msg
+      const ok = $('cf-ok'), cancel = $('cf-cancel')
       ok.textContent = opts.okText || '确定'
       ok.className = 'modal-btn ' + (opts.danger ? 'danger' : 'primary')
+      cancel.textContent = opts.cancelText || '取消'
+      cancel.style.display = opts.hideCancel ? 'none' : ''
       mask.classList.add('show')
-      if (opts.input) setTimeout(() => input.focus(), 30)
       const done = v => {
         mask.classList.remove('show')
         ok.onclick = cancel.onclick = mask.onclick = null
         resolve(v)
       }
-      ok.onclick = () => done(opts.input ? input.value : true)
-      cancel.onclick = () => done(opts.input ? null : false)
-      mask.onclick = e => { if (e.target === mask) done(opts.input ? null : false) }
+      ok.onclick = () => done(true)
+      cancel.onclick = () => done(false)
+      mask.onclick = e => { if (e.target === mask) done(false) }
     })
   }
 
-  // ---------- 预设分类（与 SQLite 初始化一致）----------
-  const PRESET_OUT = [
-    ['food', '🍜', '餐饮', '#4f5bd5'], ['grocery', '🥬', '买菜', '#6FAE5F'], ['daily', '🧴', '日用', '#4FB3A5'],
-    ['clothing', '👗', '服饰', '#E5759B'], ['home', '🏠', '居住', '#7c86ff'], ['transport', '🚇', '交通', '#34c759'],
-    ['medical', '💊', '医疗', '#ff2d55'], ['fun', '🎬', '娱乐', '#AF52DE'], ['study', '📚', '学习', '#32ADE6'], ['other', '📦', '其他', '#A79DA2']
-  ]
-  const PRESET_IN = [
-    ['salary', '💰', '工资', '#34C759'], ['bonus', '🎁', '奖金', '#FFCC00'], ['redpack', '🧧', '红包', '#D9736E'], ['other_in', '📥', '其他', '#A79DA2']
-  ]
-  let catsOut = PRESET_OUT.map(([id, e, n, c]) => ({ id, e, n, c, kind: 'expense', custom: false })),
-      catsIn = PRESET_IN.map(([id, e, n, c]) => ({ id, e, n, c, kind: 'income', custom: false }))
-  PRESET_OUT.concat(PRESET_IN).forEach(([id, , , c]) => catColor[id] = c)
-
-  const toUiCat = c => ({ id: c.id, e: c.icon, n: c.name, c: c.color, custom: !!c.custom, kind: c.kind })
-  const toRustCat = c => ({ id: c.id, name: c.n, kind: c.kind, icon: c.e, color: c.c, custom: c.custom ? 1 : 0 })
-  const cid = () => 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-  async function loadCategories() {
-    if (!IN_TAURI) return   // 降级：保留硬编码预设
-    try {
-      const rows = await invoke('list_categories')
-      if (!rows || !rows.length) return
-      const ui = rows.map(toUiCat)
-      catsOut = ui.filter(c => c.kind === 'expense')
-      catsIn = ui.filter(c => c.kind === 'income')
-      catColor = {}
-      rows.forEach(c => catColor[c.id] = c.color)
-      renderPick()
-    } catch (e) { /* 失败保留硬编码预设，不阻塞启动 */ }
-  }
-
-  // ---------- 数据层 ----------
-  let txs = []          // UI 形态：{id,ic,bg,n,note,amt,out,t,ts,date,cat,image,deleted,_i}
-  let pendingImage = null
-  let activeFilter = 'all'   // 明细筛选：all | expense | income | month | range
-  let searchKw = ''          // 备注关键词，与 chips 叠加
-  let viewYM = new Date().toISOString().slice(0, 7)   // 概览选中月份
-  let appDir = ''            // Tauri 数据目录缓存（小票查看用）
-
-  function fromRecord(r) {
-    const d = new Date(r.ts || Date.now())
-    const c = catColor[r.cat] || '#8e8e93'
-    const cat = catsOut.concat(catsIn).find(x => x.id === r.cat)
-    return {
-      id: r.id, cat: r.cat, date: r.date, ts: r.ts, image: r.image || '', deleted: !!r.deleted,
-      ic: cat ? cat.e : '📦', bg: c + '1f',
-      n: r.note || (cat ? cat.n : '未分类'), note: r.note || '',
-      amt: toYuan(r.amount), out: r.kind === 'expense',
-      t: `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  /* 金额输入拼接规则（与小程序 appendAmount 一致：防 00 / 多小数点 / 超 2 位小数） */
+  function appendAmount(cur, k) {
+    const s = String(cur || '')
+    if (k === 'del') return s.slice(0, -1)
+    if (k === '.') {
+      if (s.indexOf('.') >= 0) return s
+      return s === '' ? '0.' : s + '.'
     }
-  }
-  function toRecord(x) {
-    return {
-      id: x.id || uid(), kind: x.out ? 'expense' : 'income', amount: toCents(x.amt),
-      cat: x.cat || 'other', note: x.note || '', date: x.date || new Date().toISOString().slice(0, 10),
-      ts: x.ts || Date.now(), image: x.image || '', deleted: x.deleted ? 1 : 0
-    }
-  }
-
-  // localStorage 降级实现
-  const LS = {
-    get() { try { return JSON.parse(localStorage.getItem('jianji_records') || '[]') } catch (e) { return [] } },
-    set(list) { localStorage.setItem('jianji_records', JSON.stringify(list)) }
-  }
-
-  async function loadRecords() {
-    if (IN_TAURI) {
-      const rows = await invoke('list_records', { includeDeleted: 1 })
-      txs = rows.map(fromRecord)
-    } else {
-      let list = LS.get()
-      if (!list.length) {
-        // 演示数据（仅预览用，首次写入本地）
-        list = [
-          { id: uid(), kind: 'expense', amount: 3850, cat: 'food', note: '午餐 · 公司附近', date: '2026-11-17', ts: Date.now() - 3600000, image: '', deleted: 0 },
-          { id: uid(), kind: 'expense', amount: 1200, cat: 'transport', note: '地铁通勤', date: '2026-11-17', ts: Date.now() - 7200000, image: '', deleted: 0 },
-          { id: uid(), kind: 'income', amount: 1280000, cat: 'salary', note: '11月工资', date: '2026-11-15', ts: Date.now() - 86400000 * 2, image: '', deleted: 0 },
-          { id: uid(), kind: 'expense', amount: 320000, cat: 'home', note: '房租', date: '2026-11-05', ts: Date.now() - 86400000 * 12, image: '', deleted: 0 }
-        ]
-        LS.set(list)
-      }
-      txs = list.map(fromRecord)
-    }
-    render()
-  }
-  async function saveRecord(rec) {
-    if (IN_TAURI) await invoke('save_record', { record: toRecord(rec) })
-    else {
-      const list = LS.get(), idx = list.findIndex(r => r.id === rec.id)
-      const row = toRecord(rec)
-      if (idx >= 0) list[idx] = row; else list.unshift(row)
-      LS.set(list)
-    }
-  }
-  async function trashRecord(id, deleted) {
-    if (IN_TAURI) await invoke('trash_record', { id, deleted })
-    else {
-      const list = LS.get().map(r => r.id === id ? Object.assign({}, r, { deleted }) : r)
-      LS.set(list)
-    }
-    await loadRecords()
-  }
-
-  // ---------- 渲染 ----------
-  function txRow(x, del) {
-    return `<div class="tx"><div class="ic" style="background:${x.bg}">${x.ic}</div>
-      <div class="meta"><b>${esc(x.n)}</b><span>${x.t} · ${esc(x.note)}</span></div>
-      ${x.image ? `<button class="thumb" title="查看小票" data-id="${x.id}">▧</button>` : ''}
-      <div class="money ${x.out ? 'out' : 'in'}">${x.out ? '−' : '+'} ${money(x.amt)}</div>
-      ${del ? `<button class="edit" title="编辑" data-id="${x.id}">✎</button><button class="del" title="删除" data-id="${x.id}">✕</button>` : ''}</div>`
-  }
-  function groupByDate(list, del) {
-    if (!list.length) return '<div style="padding:24px;text-align:center;color:var(--label3);font-size:13px">暂无记录</div>'
-    const groups = {}
-    list.forEach(x => { const k = x.date; (groups[k] = groups[k] || []).push(x) })
-    return Object.keys(groups).sort().reverse().map(k =>
-      `<div class="date-group"><div class="date-label"><span>${k}</span><span>${groups[k].length} 笔</span></div>${groups[k].map(x => txRow(x, del)).join('')}</div>`
-    ).join('')
-  }
-  let trashView = false
-  // 明细筛选：类型 / 本月 / 金额区间，与关键词搜索叠加
-  function applyFilters(list) {
-    const kw = searchKw.trim().toLowerCase()
-    const nowYM = new Date().toISOString().slice(0, 7)
-    return list.filter(x => {
-      if (kw && (String(x.note || '') + ' ' + String(x.n || '')).toLowerCase().indexOf(kw) < 0) return false
-      if (activeFilter === 'expense' && !x.out) return false
-      if (activeFilter === 'income' && x.out) return false
-      if (activeFilter === 'month' && !(x.date || '').startsWith(nowYM)) return false
-      if (activeFilter === 'range') {
-        const c = toCents(x.amt)
-        if (c < 5000 || c > 50000) return false   // ¥50 – ¥500
-      }
-      return true
-    })
-  }
-  function shiftMonth(ym, delta) {
-    const d = new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)) - 1 + delta, 1)
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-  }
-  function monthText(ym) { return ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月' }
-  function paintMonth() {
-    const t = monthText(viewYM)
-    const el = document.getElementById('monthLabel'); if (el) el.textContent = t
-    const sub = document.getElementById('ovSub'); if (sub) sub.textContent = t + ' · 你的收支一览'
-    const ds = document.getElementById('donutSub'); if (ds) ds.textContent = Number(viewYM.slice(5, 7)) + '月占比'
-  }
-  function pctChange(cur, prev) { return prev > 0 ? (cur - prev) / prev * 100 : null }
-
-  function render() {
-    const live = txs.filter(x => !x.deleted)
-    txs.forEach((x, i) => x._i = i)
-    document.getElementById('recentList').innerHTML = groupByDate(live.slice(0, 5), false)
-    const base = trashView ? txs.filter(x => x.deleted) : live
-    const shown = applyFilters(base)
-    document.getElementById('fullList').innerHTML = groupByDate(shown, true)
-    document.getElementById('txCount').textContent = shown.length
-    const et = document.getElementById('emptyTrash')
-    if (et) et.textContent = `回收站（${txs.length - live.length}）`
-    paintMonth()
-    // 汇总：按工具栏选中月份（不再是全量）
-    const monthLive = live.filter(x => (x.date || '').startsWith(viewYM))
-    const prevLive = live.filter(x => (x.date || '').startsWith(shiftMonth(viewYM, -1)))
-    const inc = sumYuan(monthLive.filter(x => !x.out).map(x => x.amt))
-    const exp = sumYuan(monthLive.filter(x => x.out).map(x => x.amt))
-    const pInc = sumYuan(prevLive.filter(x => !x.out).map(x => x.amt))
-    const pExp = sumYuan(prevLive.filter(x => x.out).map(x => x.amt))
-    const cards = document.querySelectorAll('#v-overview .card .v')
-    if (cards[0]) cards[0].innerHTML = `<span class="cur">¥</span>${exp.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`
-    if (cards[1]) cards[1].innerHTML = `<span class="cur">¥</span>${inc.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`
-    if (cards[2]) cards[2].innerHTML = `<span class="cur">¥</span>${(inc - exp).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`
-    // 卡片副文字：真实环比与储蓄率（替换写死假数据）
-    const isCur = viewYM === new Date().toISOString().slice(0, 7)
-    const ml = isCur ? '本月' : Number(viewYM.slice(5, 7)) + '月'
-    const ks = document.querySelectorAll('#v-overview .stats .card .k')
-    if (ks[0]) ks[0].textContent = ml + '支出'
-    if (ks[1]) ks[1].textContent = ml + '收入'
-    if (ks[2]) ks[2].textContent = ml + '结余'
-    const ds = document.querySelectorAll('#v-overview .stats .card .d')
-    const dExp = pctChange(exp, pExp), dInc = pctChange(inc, pInc)
-    if (ds[0]) ds[0].innerHTML = ml + '环比 ' + (dExp === null ? '<b>—</b>' : `<b class="${dExp > 0 ? 'up' : 'down'}">${dExp > 0 ? '↑' : '↓'} ${Math.abs(dExp).toFixed(1)}%</b>`)
-    if (ds[1]) ds[1].innerHTML = ml + '环比 ' + (dInc === null ? '<b>—</b>' : `<b class="${dInc >= 0 ? 'down' : 'up'}">${dInc >= 0 ? '↑' : '↓'} ${Math.abs(dInc).toFixed(1)}%</b>`)
-    if (ds[2]) ds[2].textContent = '储蓄率 ' + (inc > 0 ? Math.round((inc - exp) / inc * 100) + '%' : '—')
-    // 支出分类环形图（选中月份真实数据）
-    renderDonut(monthLive.filter(x => x.out))
-    // 近 12 个月收支趋势（以选中月份为终点）
-    renderTrend(live)
-  }
-
-  function renderTrend(list) {
-    const svg = document.querySelector('#v-overview .chart-svg')
-    if (!svg) return
-    const baseY = Number(viewYM.slice(0, 4)), baseM = Number(viewYM.slice(5, 7))
-    const months = []
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(baseY, baseM - 1 - i, 1)
-      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-    }
-    const buckets = {}
-    months.forEach(m => buckets[m] = { income: 0, expense: 0 })
-    list.forEach(x => {
-      const k = (x.date || '').slice(0, 7)
-      if (buckets[k]) buckets[k][x.out ? 'expense' : 'income'] += toCents(x.amt)
-    })
-    const maxC = Math.max(1, ...months.map(m => Math.max(buckets[m].income, buckets[m].expense)))
-    const pts = key => months.map((m, i) =>
-      `${(i / 11 * 520).toFixed(1)},${(140 - buckets[m][key] / maxC * 110).toFixed(1)}`).join(' ')
-    const incPts = pts('income'), expPts = pts('expense')
-    svg.innerHTML = `
-      <defs><linearGradient id="gi" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f9e6b" stop-opacity=".22"/><stop offset="1" stop-color="#2f9e6b" stop-opacity="0"/></linearGradient></defs>
-      <g stroke="var(--sep)" stroke-width="1"><line x1="0" y1="38" x2="520" y2="38"/><line x1="0" y1="80" x2="520" y2="80"/><line x1="0" y1="122" x2="520" y2="122"/></g>
-      <path d="M${incPts.split(' ').join(' L')} L520,150 L0,150Z" fill="url(#gi)"/>
-      <polyline points="${incPts}" fill="none" stroke="#2f9e6b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <polyline points="${expPts}" fill="none" stroke="#c1504a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`
-    const axis = document.querySelector('#v-overview .xaxis')
-    if (axis) axis.innerHTML = months.filter((_, i) => i % 2 === 0).map(m => `<span>${Number(m.slice(5))}月</span>`).join('')
-  }
-
-  const DONUT_COLORS = ['#4f5bd5', '#7c86ff', '#34c759', '#ff9500', '#c1504a', '#af52de', '#32ade6', '#a2845e']
-  function renderDonut(expList) {
-    const byCat = {}
-    expList.forEach(x => { byCat[x.cat] = (byCat[x.cat] || 0) + toCents(x.amt) })
-    const arr = Object.keys(byCat).map(k => {
-      const c = catsOut.concat(catsIn).find(z => z.id === k)
-      return { name: c ? c.n : k, id: k, c: c ? c.c : '#8e8e93', v: toYuan(byCat[k]) }
-    }).sort((a, b) => b.v - a.v)
-    const donut = document.querySelector('#v-overview .donut')
-    const listEl = document.querySelector('#v-overview .cat-list')
-    if (!donut || !listEl) return
-    const total = sumYuan(arr.map(a => a.v))
-    const center = donut.querySelector('.donut-center b')
-    if (center) center.textContent = '¥' + Math.round(total).toLocaleString('zh-CN')
-    if (!arr.length) {
-      donut.style.background = 'var(--surface2)'
-      listEl.innerHTML = '<div style="font-size:12px;color:var(--label3)">本月暂无支出</div>'
-      return
-    }
-    // conic-gradient 按占比连续绘制
-    let acc = 0
-    const stops = []
-    arr.slice(0, 8).forEach((a, i) => {
-      const from = acc / total * 100
-      acc += toCents(a.v)
-      const to = acc / total * 100
-      stops.push(`${DONUT_COLORS[i % DONUT_COLORS.length]} ${from}% ${to}%`)
-    })
-    donut.style.background = `conic-gradient(${stops.join(',')})`
-    listEl.innerHTML = arr.slice(0, 8).map((a, i) => {
-      const pct = Math.round(toCents(a.v) / toCents(total) * 100)
-      return `<div class="cat-row"><i class="dot" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></i><span class="name">${esc(a.name)}</span><span class="amt num">${a.v.toLocaleString('zh-CN')}</span><span class="pct">${pct}%</span></div>`
-    }).join('')
-  }
-
-  // ---------- 导航 ----------
-  document.querySelectorAll('.nav button').forEach(b => b.onclick = () => {
-    document.querySelectorAll('.nav button').forEach(x => x.classList.remove('active'))
-    b.classList.add('active')
-    const v = b.dataset.v
-    document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'v-' + v))
-    document.querySelector('.content').scrollTop = 0
-    if (v === 'stats') renderStats()
-    if (v === 'cats') renderCats()
-  })
-  document.querySelectorAll('.link[data-go]').forEach(e => e.onclick = () =>
-    document.querySelector(`.nav button[data-v="${e.dataset.go}"]`).click())
-  document.querySelectorAll('#segTime button').forEach(b => b.onclick = () => {
-    document.querySelectorAll('#segTime button').forEach(x => x.classList.remove('on'))
-    b.classList.add('on'); renderStats()
-  })
-  // 检索 chips（Q11）：类型 / 本月 / 金额区间
-  document.querySelectorAll('.chips .chip').forEach(c => c.onclick = () => {
-    document.querySelectorAll('.chips .chip').forEach(x => x.classList.remove('on'))
-    c.classList.add('on')
-    activeFilter = c.dataset.f || 'all'
-    render()
-  })
-  document.querySelector('.search').onclick = async () => {
-    const kw = await askConfirm('搜索记录', '输入备注关键词（留空显示全部）：', { input: '备注关键词', okText: '搜索' })
-    if (kw === null) return
-    searchKw = kw.trim()
-    document.querySelector('.nav button[data-v="list"]').click()
-    render()
-    toast(searchKw ? '搜索：' + searchKw : '已显示全部记录')
-  }
-  // fullList 统一事件委托（编辑/删除/恢复/小票），innerHTML 重渲染不丢事件
-  document.getElementById('fullList').addEventListener('click', async e => {
-    const thumb = e.target.closest('.thumb')
-    if (thumb) { openReceipt(thumb.dataset.id); return }
-    const ed = e.target.closest('.edit')
-    if (ed) {
-      const rec = txs.find(x => x.id === ed.dataset.id)
-      if (rec) openEditor(rec)
-      return
-    }
-    const del = e.target.closest('.del')
-    if (del) {
-      if (trashView) { await trashRecord(del.dataset.id, 0); toast('记录已恢复'); return }
-      const ok = await askConfirm('删除记录', '确定删除这笔记录？可在回收站恢复。', { danger: true, okText: '删除' })
-      if (ok) await trashRecord(del.dataset.id, 1)
-    }
-  })
-  // 回收站切换 / 清空
-  const emptyTrashEl = document.getElementById('emptyTrash')
-  if (emptyTrashEl) emptyTrashEl.onclick = () => {
-    trashView = !trashView
-    const purge = document.getElementById('purgeTrash')
-    if (purge) purge.style.display = trashView ? '' : 'none'
-    render()
-    toast(trashView ? '回收站：点 ✕ 恢复记录' : '已返回明细')
-  }
-  const purgeEl = document.getElementById('purgeTrash')
-  if (purgeEl) purgeEl.onclick = async () => {
-    const ok = await askConfirm('清空回收站', '物理删除所有已删除的记录，此操作不可恢复。', { danger: true, okText: '清空' })
-    if (!ok) return
-    await purgeTrash()
-    toast('回收站已清空')
-  }
-
-  // ---------- 统计（Q9/Q10）----------
-  function renderStats() {
-    const live = txs.filter(x => !x.deleted)
-    const dim = (document.querySelector('#segTime button.on') || {}).textContent || '月'
-    let list = live
-    if (dim === '周') {
-      const n = new Date(), day = (n.getDay() + 6) % 7   // 周一=0
-      n.setDate(n.getDate() - day); const start = n.toISOString().slice(0, 10)
-      list = live.filter(x => x.date >= start)
-    }
-    else if (dim === '月') { const ym = new Date().toISOString().slice(0, 7); list = live.filter(x => x.date.startsWith(ym)) }
-    else if (dim === '年') { const y = new Date().getFullYear(); list = live.filter(x => x.date.startsWith(String(y))) }
-    else if (dim === '近3年') { const y = new Date().getFullYear() - 2; list = live.filter(x => +x.date.slice(0, 4) >= y) }
-    else if (dim === '近5年') { const y = new Date().getFullYear() - 4; list = live.filter(x => +x.date.slice(0, 4) >= y) }
-    // 三张大卡：与下方图表同口径，全部基于 list（真实数据）
-    const incC = list.filter(x => !x.out).reduce((a, x) => a + toCents(x.amt), 0)
-    const expC = list.filter(x => x.out).reduce((a, x) => a + toCents(x.amt), 0)
-    const span = dim === '周' ? 1 : dim === '月' ? 1 : dim === '年' ? 12 : dim === '近3年' ? 36 : dim === '近5年' ? 60 : 1
-    const RANGE = { '周': '本周', '月': '本月', '年': '本年', '近3年': '近3年', '近5年': '近5年' }
-    const rangeLabel = RANGE[dim] || dim
-    const sv = document.querySelectorAll('#v-stats .stats .card .v')
-    if (sv[0]) sv[0].innerHTML = `<span class="cur">¥</span>${fmt2(toYuan(incC))}`
-    if (sv[1]) sv[1].innerHTML = `<span class="cur">¥</span>${fmt2(toYuan(expC))}`
-    if (sv[2]) sv[2].innerHTML = `<span class="cur">¥</span>${fmt2(toYuan(incC - expC))}`
-    const sd = document.querySelectorAll('#v-stats .stats .card .d')
-    if (sd[0]) sd[0].textContent = rangeLabel
-    if (sd[1]) sd[1].textContent = rangeLabel
-    if (sd[2]) sd[2].innerHTML = `${rangeLabel}月均 <b>¥${fmt2(toYuan(Math.round((incC - expC) / span)))}</b>`
-    const byCat = {}
-    list.filter(x => x.out).forEach(x => byCat[x.cat] = (byCat[x.cat] || 0) + toCents(x.amt))
-    const arr = Object.keys(byCat).map(k => {
-      const c = catsOut.concat(catsIn).find(z => z.id === k)
-      return { name: c ? c.n : k, v: toYuan(byCat[k]) }
-    }).sort((a, b) => b.v - a.v)
-    const max = arr.length ? arr[0].v : 1
-    document.getElementById('barChart').innerHTML = arr.length ? arr.map(b =>
-      `<div style="display:flex;align-items:center;gap:12px;margin:9px 0">
-        <span style="width:44px;font-size:12px;color:var(--label2)">${esc(b.name)}</span>
-        <div style="flex:1;background:rgba(120,120,140,.10);border-radius:6px;height:16px;overflow:hidden">
-          <div style="width:${b.v / max * 100}%;height:100%;border-radius:6px;background:linear-gradient(90deg,#4f5bd5,#7c86ff);transition:width .7s var(--ease-spring)"></div></div>
-        <span class="num" style="width:70px;text-align:right;font-size:13px;font-weight:600">${money(b.v)}</span>
-      </div>`).join('') : '<div style="color:var(--label3);font-size:13px;padding:12px">该时间段暂无支出</div>'
-    // 热力（当日支出）
-    const heat = {}
-    list.filter(x => x.out).forEach(x => heat[x.date] = (heat[x.date] || 0) + x.amt)
-    const maxH = Math.max(1, ...Object.values(heat))
-    let html = ''
-    for (let i = 0; i < 126; i++) {
-      const d = new Date(); d.setDate(d.getDate() - (125 - i))
-      const key = d.toISOString().slice(0, 10)
-      const v = heat[key] || 0
-      const a = v ? 0.15 + 0.65 * (v / maxH) : 0.06
-      html += `<i style="background:rgba(79,91,213,${a.toFixed(2)})" title="${key} ${v ? money(v) : '无支出'}"></i>`
-    }
-    document.getElementById('heat').innerHTML = html
-  }
-
-  // ---------- 分类管理（Q5）----------
-  const ICON_CHOICES = ['🍜', '🥬', '🧴', '👗', '🏠', '🚇', '💊', '🎬', '📚', '📦', '💰', '🎁', '🧧', '💼', '✈️', '☕', '🎮', '🐱', '💇', '🎯']
-  const COLOR_CHOICES = ['#4f5bd5', '#7c86ff', '#34c759', '#ff9500', '#c1504a', '#af52de', '#32ade6', '#ff2d55', '#6FAE5F', '#A79DA2']
-  function renderCats() {
-    const card = c => `<div class="catcard${c.custom ? ' custom' : ''}" data-id="${esc(c.id)}" data-kind="${c.kind}">
-      <div class="e" style="background:${esc(c.c)}1c">${esc(c.e)}</div><b>${esc(c.n)}</b><span>${c.custom ? '自定义 · 编辑' : '点击编辑'}</span></div>`
-    document.getElementById('catGridOut').innerHTML = catsOut.map(card).join('')
-    document.getElementById('catGridIn').innerHTML = catsIn.map(card).join('')
-  }
-  let catMode = 'new', catEditing = null, catPickIcon = '🍜', catPickColor = COLOR_CHOICES[0], catPickKind = 'expense'
-  function paintCatChoices() {
-    document.getElementById('cat-icons').innerHTML = ICON_CHOICES.map(x =>
-      `<i class="${x === catPickIcon ? 'on' : ''}" data-v="${x}">${x}</i>`).join('')
-    document.querySelectorAll('#cat-icons i').forEach(i => i.onclick = () => {
-      catPickIcon = i.dataset.v
-      document.querySelectorAll('#cat-icons i').forEach(x => x.classList.remove('on')); i.classList.add('on')
-    })
-    document.getElementById('cat-colors').innerHTML = COLOR_CHOICES.map(x =>
-      `<i class="${x === catPickColor ? 'on' : ''}" data-v="${x}" style="background:${x}"></i>`).join('')
-    document.querySelectorAll('#cat-colors i').forEach(i => i.onclick = () => {
-      catPickColor = i.dataset.v
-      document.querySelectorAll('#cat-colors i').forEach(x => x.classList.remove('on')); i.classList.add('on')
-    })
-  }
-  function openCatModal(mode, c) {
-    catMode = mode; catEditing = c || null
-    catPickKind = c ? c.kind : 'expense'
-    catPickIcon = c ? c.e : '🍜'
-    catPickColor = c ? c.c : COLOR_CHOICES[0]
-    document.getElementById('cat-modal-title').textContent = c ? '编辑分类' : '新建分类'
-    document.getElementById('cat-name').value = c ? c.n : ''
-    document.querySelectorAll('#cat-kind button').forEach(b => b.classList.toggle('on', b.dataset.k === catPickKind))
-    document.getElementById('cat-del').style.display = (c && c.custom) ? '' : 'none'
-    paintCatChoices()
-    document.getElementById('cat-modal').classList.add('show')
-  }
-  function closeCatModal() { document.getElementById('cat-modal').classList.remove('show') }
-  async function saveCategoryFlow() {
-    const name = document.getElementById('cat-name').value.trim()
-    if (!name) { toast('请输入分类名称'); return }
-    const c = {
-      id: catEditing ? catEditing.id : cid(), n: name, e: catPickIcon, c: catPickColor,
-      kind: catPickKind, custom: catEditing ? catEditing.custom : true
-    }
-    try {
-      if (IN_TAURI) await invoke('save_category', { category: toRustCat(c) })
-      const list = c.kind === 'expense' ? catsOut : catsIn
-      const idx = list.findIndex(x => x.id === c.id)
-      if (idx >= 0) list[idx] = c; else list.push(c)
-      catColor[c.id] = c.c
-      closeCatModal(); renderCats(); renderPick()
-      toast(catMode === 'edit' ? '分类已更新' : '分类已创建')
-    } catch (e) { toast('保存失败：' + (e && e.message || e)) }
-  }
-  async function deleteCategoryFlow() {
-    if (!catEditing || !catEditing.custom) return
-    const ok = await askConfirm('删除分类', `确定删除「${catEditing.n}」？已使用该分类的记录不会被删除。`, { danger: true, okText: '删除' })
-    if (!ok) return
-    try {
-      if (IN_TAURI) await invoke('delete_category', { id: catEditing.id })
-      const list = catEditing.kind === 'expense' ? catsOut : catsIn
-      const i = list.findIndex(x => x.id === catEditing.id); if (i >= 0) list.splice(i, 1)
-      closeCatModal(); renderCats(); renderPick()
-      toast('分类已删除')
-    } catch (e) { toast('删除失败：' + (e && e.message || e)) }
-  }
-  // 事件委托：绑在容器上，innerHTML 重渲染不丢事件
-  ;['catGridOut', 'catGridIn'].forEach(id => {
-    document.getElementById(id).addEventListener('click', e => {
-      const el = e.target.closest('.catcard'); if (!el) return
-      const list = id === 'catGridOut' ? catsOut : catsIn
-      const c = list.find(x => x.id === el.dataset.id)
-      if (c) openCatModal('edit', c)
-    })
-  })
-  document.getElementById('cat-new').onclick = () => openCatModal('new', null)
-  document.getElementById('cat-cancel').onclick = closeCatModal
-  document.getElementById('cat-modal').onclick = e => { if (e.target.id === 'cat-modal') closeCatModal() }
-  document.getElementById('cat-save').onclick = saveCategoryFlow
-  document.getElementById('cat-del').onclick = deleteCategoryFlow
-  document.querySelectorAll('#cat-kind button').forEach(b => b.onclick = () => {
-    catPickKind = b.dataset.k
-    document.querySelectorAll('#cat-kind button').forEach(x => x.classList.remove('on')); b.classList.add('on')
-  })
-
-  // ---------- 记一笔（Q3/Q4）----------
-  // 金额单一数据源为 #amt.value；把任意输入规范化为合法金额字符串（纯函数）
-  function sanitizeAmt(raw) {
-    let s = String(raw == null ? '' : raw).replace(/[^\d.]/g, '')
     const dot = s.indexOf('.')
-    if (dot !== -1) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '')
-    if (s.charAt(0) === '.') s = '0' + s
-    s = s.replace(/^0+(?=\d)/, '')
-    return s.slice(0, 8)
+    if (dot >= 0 && s.length - dot > 2) return s
+    if (s === '0') return k
+    if (s.replace('.', '').length >= 7) return s
+    return s + k
   }
-  let curType = 'out', curCat = 0
-  function renderPick() {
-    const list = curType === 'out' ? catsOut : catsIn
-    document.getElementById('pickcat').innerHTML = list.map((c, i) =>
-      `<div class="pc ${i === curCat ? 'on' : ''}" data-i="${i}"><div class="e" style="background:${c.c}22">${c.e}</div><span>${esc(c.n)}</span></div>`).join('')
-    document.querySelectorAll('.pc').forEach(p => p.onclick = () => { curCat = +p.dataset.i; renderPick() })
-  }
-  renderPick()
-  let editingId = null
-  function openEditor(rec) {
-    editingId = rec ? rec.id : null
-    document.getElementById('sheet-title').textContent = rec ? '编辑记录' : '记一笔'
-    document.getElementById('btnDone').textContent = rec ? '保存修改' : '完成'
-    document.getElementById('btnEditDel').style.display = rec ? '' : 'none'
-    document.getElementById('amt').value = rec ? String(rec.amt) : '0'
-    document.getElementById('note').value = rec ? rec.note : ''
-    document.getElementById('tx-date').value = rec ? rec.date : new Date().toISOString().slice(0, 10)
-    pendingImage = rec ? (rec.image || '') : null
-    curType = rec ? (rec.out ? 'out' : 'in') : 'out'
-    const list = curType === 'out' ? catsOut : catsIn
-    const idx = rec ? list.findIndex(c => c.id === rec.cat) : 0
-    curCat = idx >= 0 ? idx : 0
-    document.querySelectorAll('#segType button').forEach(b =>
-      b.classList.toggle('on', (b.textContent === '支出') === (curType === 'out')))
-    renderPick()
-    document.getElementById('backdrop').classList.add('show')
-    setTimeout(() => {
-      const el = document.getElementById('amt')
-      el.focus(); el.select()   // 全选，直接输入即替换
-    }, 300)
-  }
-  document.getElementById('addBtn').onclick = () => openEditor(null)
-  document.getElementById('backdrop').onclick = e => { if (e.target.id === 'backdrop') document.getElementById('backdrop').classList.remove('show') }
-  document.querySelectorAll('#segType button').forEach(b => b.onclick = () => {
-    document.querySelectorAll('#segType button').forEach(x => x.classList.remove('on'))
-    b.classList.add('on'); curType = b.textContent === '支出' ? 'out' : 'in'; curCat = 0; renderPick()
-  })
-  const amtInput = document.getElementById('amt')
-  amtInput.addEventListener('input', () => {
-    const clean = sanitizeAmt(amtInput.value)
-    if (clean !== amtInput.value) amtInput.value = clean   // 回写规范化结果（覆盖粘贴/IME）
-  })
-  amtInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit() }
-  })
-  amtInput.addEventListener('blur', () => {
-    if (amtInput.value === '' || amtInput.value === '.') amtInput.value = '0'
-  })
-  async function pickImage() {
-    if (!IN_TAURI) { toast('小票图片需 Tauri 环境'); return }
-    try {
-      const p = await window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
-      if (!p) return
-      // 保留原扩展名（此前一律存成 .png，会导致 jpg 小票查看异常）
-      const ext = (String(p).split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png'
-      pendingImage = await invoke('save_image', { srcPath: p, name: 'receipt_' + Date.now() + '.' + ext })
-      toast('小票图片已保存到本地')
-    } catch (e) { toast('选择图片失败：' + e) }
-  }
-  document.getElementById('btnPhoto').onclick = () => pickImage()
-
-  // 小票查看：图片存于 data_dir/images/，经 asset 协议转为可显示 URL
-  async function ensureAppDir() {
-    if (!IN_TAURI) return ''
-    if (!appDir) { try { appDir = await invoke('data_dir') } catch (e) { appDir = '' } }
-    return appDir
-  }
-  async function openReceipt(id) {
-    if (!IN_TAURI) { toast('小票查看需 Tauri 环境'); return }
-    const rec = txs.find(x => x.id === id)
-    if (!rec || !rec.image) return
-    const dir = await ensureAppDir()
-    if (!dir) { toast('无法定位小票目录'); return }
-    const img = document.getElementById('receipt-img')
-    const mask = document.getElementById('receipt-modal')
-    if (!img || !mask) return
-    const full = dir.replace(/[\\/]+$/, '') + '\\images\\' + rec.image
-    img.onerror = () => toast('小票文件不存在或已移动')
-    img.src = window.__TAURI__.core.convertFileSrc(full)
-    mask.classList.add('show')
-  }
-  const receiptMask = document.getElementById('receipt-modal')
-  if (receiptMask) {
-    const close = () => receiptMask.classList.remove('show')
-    const btn = document.getElementById('receipt-close')
-    if (btn) btn.onclick = close
-    receiptMask.onclick = e => { if (e.target === receiptMask) close() }
-  }
-  // 概览「最近记录」也支持点缩略图查看
-  const recentEl = document.getElementById('recentList')
-  if (recentEl) recentEl.addEventListener('click', e => {
-    const t = e.target.closest('.thumb')
-    if (t) openReceipt(t.dataset.id)
-  })
-  document.getElementById('btnDone').onclick = () => commit()
-  document.getElementById('btnEditDel').onclick = async () => {
-    if (!editingId) return
-    const ok = await askConfirm('删除记录', '确定删除这笔记录？可在回收站恢复。', { danger: true, okText: '删除' })
-    if (!ok) return
-    await trashRecord(editingId, 1)
-    document.getElementById('backdrop').classList.remove('show')
-    editingId = null
-    toast('记录已删除，可在回收站恢复')
-  }
-  async function purgeTrash() {
-    if (IN_TAURI) await invoke('purge_trash')
-    else { const list = LS.get().filter(r => !r.deleted); LS.set(list) }
-    await loadRecords()
-  }
-  async function commit() {
-    const v = parseFloat(sanitizeAmt(document.getElementById('amt').value))
-    if (!v || v <= 0) { toast('请输入金额'); return }
-    const list = curType === 'out' ? catsOut : catsIn, c = list[curCat]
-    const keep = editingId ? txs.find(x => x.id === editingId) : null
-    const d = new Date()
-    const x = {
-      id: editingId || uid(),
-      cat: c.id, ic: c.e, bg: c.c + '1f', out: curType === 'out', amt: v,
-      note: document.getElementById('note').value || c.n, image: pendingImage || '',
-      date: document.getElementById('tx-date').value || d.toISOString().slice(0, 10),
-      ts: keep ? keep.ts : d.getTime(), deleted: keep ? keep.deleted : false
-    }
-    await saveRecord(x)
-    document.getElementById('amt').value = '0'
-    document.getElementById('backdrop').classList.remove('show')
-    editingId = null
-    await loadRecords()
-    toast(keep ? '修改已保存' : (curType === 'out' ? '支出 ' : '收入 ') + money(v) + ' 已记录')
+  function sanitizeAmount(raw) {
+    const s = String(raw == null ? '' : raw).replace(/[^0-9.]/g, '')
+    let out = ''
+    for (let i = 0; i < s.length; i++) out = appendAmount(out, s[i])
+    return out
   }
 
-  // ---------- 导出 / 备份（Q12/Q22）----------
-  async function downloadText(name, text, mime) {
-    if (IN_TAURI) {
-      try {
-        const path = await window.__TAURI__.dialog.save({ defaultPath: name })
-        if (path) { await window.__TAURI__.fs.writeTextFile(path, text); toast('已保存到 ' + path); return }
-      } catch (e) { /* fall through */ }
-    }
-    const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' })
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click()
-    URL.revokeObjectURL(a.href)
+  function iconImg(cat) {
+    return '<img src="assets/icons/' + encodeURIComponent(cat) + '.svg" alt="" />'
   }
-  function buildCSV() {
-    const live = txs.filter(x => !x.deleted)
-    const escCsv = v => { let s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s)) s = "'" + s; if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"'; return s }
-    const rows = [['日期', '类型', '分类', '金额', '备注'].join(',')]
-    live.forEach(x => {
-      const c = catsOut.concat(catsIn).find(z => z.id === x.cat)
-      rows.push([x.date, x.out ? '支出' : '收入', c ? c.n : x.cat, x.amt.toFixed(2), x.note].map(escCsv).join(','))
+
+  /* ================= 外观（主题 + 深浅模式） ================= */
+  function applyAppearance() {
+    document.body.className = store.modeClass() + ' ' + store.themeClass()
+  }
+  /* 跟随系统时监听系统主题变化（与小程序 wx.onThemeChange 单向驱动一致） */
+  try {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (store.getAppearance() === 'system') applyAppearance()
     })
-    return rows.join('\r\n')
+  } catch (e) { /* 旧内核无 addEventListener */ }
+
+  /* ================= 页面路由（替代 tabBar + navigateTo） ================= */
+  let curPage = 'index'
+  function goto(page) {
+    if (page === curPage) return
+    curPage = page
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.page === page))
+    const sec = $('page-' + page)
+    document.querySelectorAll('#app > .page').forEach(p => { p.hidden = p.id !== 'page-' + page })
+    /* 内容淡入（CSS class 方案，终态必为 opacity:1 —— 移植 transition.js 血泪教训口径） */
+    sec.classList.remove('page-fade')
+    void sec.offsetWidth
+    sec.classList.add('page-fade')
+    window.scrollTo(0, 0)
+    render(page)
   }
-  // JSON 备份 / 导入（P1）：桌面端走 Rust 命令，浏览器降级走 Blob / FileReader
-  function buildBackup() {
-    return JSON.stringify({
-      app: '简记', version: 1, exportedAt: new Date().toISOString(),
-      records: txs.map(toRecord),
-      categories: catsOut.concat(catsIn).map(toRustCat),
-      settings: {}
-    }, null, 2)
+  function renderAdd() { resetAdd() }
+  function render(page) {
+    if (page === 'index') renderIndex()
+    else if (page === 'add') renderAdd()
+    else if (page === 'stats') renderStats()
+    else if (page === 'budget') renderBudget()
+    else if (page === 'goal') renderGoal()
+    else if (page === 'me') renderMe()
+    else if (page === 'settings') renderSettings()
   }
-  async function exportBackup() {
-    const name = '简记-备份-' + new Date().toISOString().slice(0, 10) + '.json'
-    if (!IN_TAURI) {
-      downloadText(name, buildBackup(), 'application/json')
-      toast('JSON 备份已下载')
-      return
+
+  /* =========================================================================
+     首页
+     ========================================================================= */
+  function renderIndex() {
+    const ym = D.thisMonth()
+    const today = D.today()
+    const bs = store.budgetStatus(ym)
+    const sum = store.summary(ym)
+    const records = store.getRecords(ym)
+
+    const todayCents = records.reduce(function (s, r) {
+      if (r.type !== 'expense' || r.date !== today) return s
+      return s + M.toCents(r.amount)
+    }, 0)
+    const todayExpense = M.toYuan(todayCents)
+
+    /* 近 7 天柱状（颜色口径与小程序一致：最高=主题色，今天=tint .55，其余=tint .8） */
+    const rawDays = store.recentDays(7)
+    let maxAmt = 0
+    let weekCents = 0
+    for (let i = 0; i < rawDays.length; i++) {
+      if (rawDays[i].amount > maxAmt) maxAmt = rawDays[i].amount
+      weekCents += M.toCents(rawDays[i].amount)
     }
-    try {
-      const path = await window.__TAURI__.dialog.save({ defaultPath: name, filters: [{ name: 'JSON 备份', extensions: ['json'] }] })
-      if (!path) return
-      await invoke('save_backup_to', { path })
-      toast('JSON 备份已保存')
-    } catch (e) { toast('备份失败：' + (e && e.message || e)) }
+    const days = rawDays.map(function (d) {
+      let h = 4
+      if (maxAmt > 0 && d.amount > 0) h = Math.max(10, Math.round(d.amount / maxAmt * 100))
+      else if (d.amount > 0) h = 30
+      const isToday = d.date === today
+      return {
+        date: d.date,
+        label: isToday ? '今' : String(Number(d.label)),
+        amount: d.amount, h: h,
+        color: (d.amount === maxAmt && maxAmt > 0) ? store.themeColor()
+          : (isToday ? store.themeTint(0.55) : store.themeTint(0.8))
+      }
+    })
+
+    /* 最近记录 */
+    const recent = records.slice(0, 8).map(function (r) {
+      const c = C.getCat(r.cat)
+      return {
+        id: r.id, ym: ym, type: r.type, cat: r.cat,
+        catName: c.name, emoji: c.emoji,
+        note: r.note, when: D.human(r.date),
+        amountText: M.fmt(r.amount)
+      }
+    })
+
+    const heroLabel = bs.status === 'over' ? '本月已超支'
+      : (ym === D.thisMonth() ? '本月还能花' : D.monthLabel(ym) + ' 剩余')
+    const dailyLeftText = bs.status === 'over'
+      ? '已超 ¥' + M.fmt(Math.abs(bs.left))
+      : '每天可花 ¥' + M.fmt(bs.dailyLeft)
+
+    let hero = ''
+    if (bs.hasBudget) {
+      hero += '<div class="hero-mask1"></div><div class="hero-mask2"></div>'
+      hero += '<div class="hero-top"><span class="hero-label">' + esc(heroLabel) + '</span>'
+      hero += '<button class="hero-pill" id="idx-gobudget">改预算</button></div>'
+      hero += '<div class="hero-num"><span class="hero-cur">¥</span><span class="hero-amt num">' + esc(M.fmt(Math.abs(bs.left))) + '</span></div>'
+      hero += '<div class="hero-bar"><div class="bar"><div class="bar-fill" style="width:' + Math.min(100, Math.max(bs.pct, 0)) + '%"></div></div></div>'
+      hero += '<div class="hero-meta"><span>预算 ¥' + esc(M.fmt(bs.total)) + '</span><span class="dot">·</span><span>已花 ¥' + esc(M.fmt(bs.hasBudget ? bs.used : sum.expense)) + '（' + bs.pct + '%）</span></div>'
+      hero += '<div class="hero-foot">'
+      if (bs.daysLeft > 0) {
+        hero += '<span class="foot-k">还剩 ' + bs.daysLeft + ' 天</span><span class="foot-v">' + esc(dailyLeftText) + '</span>'
+      } else {
+        hero += '<span class="foot-k">本月已结束</span><span class="foot-v">共花 ¥' + esc(M.fmt(bs.hasBudget ? bs.used : sum.expense)) + '</span>'
+      }
+      hero += '</div>'
+    } else {
+      hero += '<div class="hero-mask1"></div><div class="hero-mask2"></div>'
+      hero += '<div class="hero-top"><span class="hero-label">本月已花</span></div>'
+      hero += '<div class="hero-num"><span class="hero-cur">¥</span><span class="hero-amt num">' + esc(M.fmt(sum.expense)) + '</span></div>'
+      hero += '<div class="hero-meta solo"><span>还没有预算，就没法帮你盯住超支</span></div>'
+      hero += '<button class="hero-cta" id="idx-gobudget"><span>设一个本月预算 · 30 秒</span><span class="arrow">→</span></button>'
+    }
+    const heroEl = $('idx-hero')
+    heroEl.className = 'hero tone-' + bs.tone
+    heroEl.innerHTML = hero
+    const gob = $('idx-gobudget')
+    if (gob) gob.onclick = () => goto('budget')
+
+    $('idx-stats').innerHTML =
+      '<div class="stat" data-goto="stats"><span class="stat-k">今日花掉</span><span class="stat-v num">¥' + esc(M.fmt(todayExpense)) + '</span></div>' +
+      '<div class="stat" data-goto="stats"><span class="stat-k">' + esc(D.monthLabel(ym)) + '支出</span><span class="stat-v num">¥' + esc(M.fmt(bs.hasBudget ? bs.used : sum.expense)) + '</span></div>' +
+      '<div class="stat" data-goto="stats"><span class="stat-k">收入</span><span class="stat-v num income">¥' + esc(M.fmt(sum.income)) + '</span></div>'
+
+    $('idx-bars').innerHTML = days.map(d =>
+      '<div class="bar-col"><div class="bar-track"><div class="bar-col-fill" style="height:' + d.h + '%;background:' + d.color + '"></div></div><span class="bar-x">' + esc(d.label) + '</span></div>'
+    ).join('')
+    $('idx-barsfoot').innerHTML =
+      '<span>7 天共花 <span class="bold">¥' + esc(M.fmt(M.toYuan(weekCents))) + '</span></span>' +
+      '<span class="muted">最高一天 ¥' + esc(M.fmt(maxAmt)) + '</span>'
+
+    if (recent.length) {
+      $('idx-recent').innerHTML = recent.map(r =>
+        '<div class="rec" data-id="' + esc(r.id) + '" data-ym="' + esc(r.ym) + '">' +
+        '<div class="rec-ico">' + iconImg(r.cat) + '</div>' +
+        '<div class="rec-mid"><div class="rec-note">' + esc(r.note || r.catName) + '</div>' +
+        '<div class="rec-sub">' + esc(r.when) + ' · ' + esc(r.catName) + '</div></div>' +
+        '<span class="rec-amt num ' + (r.type === 'income' ? 'income' : '') + '">' + (r.type === 'income' ? '+' : '-') + '¥' + esc(r.amountText) + '</span>' +
+        '<button class="rec-del" data-del="1" title="删除">✕</button>' +
+        '</div>'
+      ).join('') + '<div class="rec-hint">点击可以改，点 ✕ 可以删</div>'
+      $('idx-recent').querySelectorAll('.rec').forEach(row => {
+        row.onclick = e => {
+          if (e.target.closest('[data-del]')) return
+          openAddEdit(row.dataset.ym, row.dataset.id)
+        }
+      })
+      $('idx-recent').querySelectorAll('[data-del]').forEach(btn => {
+        btn.onclick = e => {
+          const row = btn.closest('.rec')
+          delRecordFlow(row.dataset.ym, row.dataset.id)
+        }
+      })
+    } else {
+      $('idx-recent').innerHTML =
+        '<div class="empty"><div class="empty-emoji"><img src="assets/icons/empty-receipt.svg" alt="" /></div>' +
+        '<div class="empty-txt">还没有记录</div><div class="empty-txt">从上面点「记一笔」开始吧</div></div>'
+    }
   }
-  async function importBackup() {
-    const ok = await askConfirm('导入 JSON 备份', '导入会覆盖当前全部记录与自定义分类，且不可撤销。确定继续？', { danger: true, okText: '选择文件' })
+
+  async function delRecordFlow(ym, id) {
+    const ok = await askConfirm('删掉这笔？', '删掉就找不回来了', { okText: '删除', cancelText: '留着', danger: true })
     if (!ok) return
-    if (!IN_TAURI) {
-      // 浏览器降级：隐藏 file input 读取本地 JSON
-      const input = document.createElement('input')
-      input.type = 'file'; input.accept = '.json,application/json'
-      input.onchange = () => {
-        const f = input.files && input.files[0]
-        if (!f) return
-        const reader = new FileReader()
-        reader.onload = () => {
-          try {
-            const obj = JSON.parse(String(reader.result || ''))
-            if (!obj || !Array.isArray(obj.records)) throw new Error('缺少 records 字段')
-            LS.set(obj.records)
-            loadRecords()
-            toast(`已导入 ${obj.records.length} 条记录`)
-          } catch (e) { toast('导入失败：' + (e && e.message || e)) }
-        }
-        reader.readAsText(f)
+    await store.deleteRecord(ym, id)
+    toast('已删除')
+    render(curPage)
+  }
+
+  /* ---------------- 记一笔弹窗（首页 quick sheet） ---------------- */
+  let cqCat = 'food'
+  function openCqSheet() {
+    cqCat = 'food'
+    $('cq-note').value = ''
+    $('cq-amt').value = ''
+    renderCqCats()
+    renderCqList()
+    $('cq-sheet').hidden = false
+    $('cq-mask').classList.add('show')
+    requestAnimationFrame(() => $('cq-sheet').classList.add('show'))
+    setTimeout(() => $('cq-amt').focus(), 320)
+  }
+  function closeCqSheet() {
+    $('cq-sheet').classList.remove('show')
+    $('cq-mask').classList.remove('show')
+    setTimeout(() => { $('cq-sheet').hidden = true }, 300)
+  }
+  function renderCqCats() {
+    $('cq-cats').innerHTML = C.catsOf('expense').map(c =>
+      '<button class="cq-cat ' + (cqCat === c.key ? 'on' : '') + '" data-cat="' + c.key + '">' +
+      '<span class="cq-cat-emoji">' + c.emoji + '</span>' + esc(c.name) + '</button>'
+    ).join('')
+    $('cq-cats').querySelectorAll('.cq-cat').forEach(b => {
+      b.onclick = () => { cqCat = b.dataset.cat; renderCqCats() }
+    })
+  }
+  function decorateCq(list) {
+    return (list || []).map(function (it, i) {
+      const c = C.getCat(it.cat)
+      return { cat: it.cat, note: it.note, amount: it.amount, index: i, name: c.name, emoji: c.emoji, amountText: M.fmt(it.amount) }
+    })
+  }
+  function renderCqList() {
+    const list = decorateCq(store.getCustomQuick())
+    $('cq-existing').hidden = !list.length
+    $('cq-list').innerHTML = list.map(it =>
+      '<div class="cq-row" data-i="' + it.index + '">' +
+      '<span class="cq-row-emoji">' + it.emoji + '</span>' +
+      '<span class="cq-row-note">' + esc(it.note) + '</span>' +
+      '<span class="cq-row-amt num">¥' + esc(it.amountText) + '</span>' +
+      '<button class="cq-row-del" data-del="1" data-i="' + it.index + '">✕</button></div>'
+    ).join('')
+    $('cq-list').querySelectorAll('.cq-row').forEach(row => {
+      row.onclick = e => {
+        if (e.target.closest('[data-del]')) return
+        useCq(Number(row.dataset.i))
       }
-      input.click()
-      return
+    })
+    $('cq-list').querySelectorAll('[data-del]').forEach(btn => {
+      btn.onclick = e => delCq(Number(btn.dataset.i))
+    })
+  }
+  async function saveCq() {
+    const amount = M.parse($('cq-amt').value)
+    if (!(amount > 0)) { toast('金额要大于 0'); return }
+    const note = String($('cq-note').value || '').trim() || C.getCat(cqCat).name
+    await store.addRecord({ type: 'expense', amount: amount, cat: cqCat, note: note, date: D.today() })
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    toast('记好了 ¥' + M.fmt(amount))
+    closeCqSheet()
+    render(curPage)
+  }
+  async function keepCq() {
+    const amount = M.parse($('cq-amt').value)
+    if (!(amount > 0)) { toast('金额要大于 0'); return }
+    const note = String($('cq-note').value || '').trim() || C.getCat(cqCat).name
+    const list = store.getCustomQuick()
+    const hit = list.findIndex(x => x.cat === cqCat && x.note === note)
+    if (hit >= 0) list[hit].amount = amount
+    else list.push({ cat: cqCat, note: note, amount: amount })
+    if (!(await store.saveCustomQuick(list))) { toast('保存失败，空间可能已满'); return }
+    toast('已存为档位')
+    renderCqList()
+  }
+  async function useCq(i) {
+    const it = store.getCustomQuick()[i]
+    if (!it) return
+    await store.addRecord({ type: 'expense', amount: it.amount, cat: it.cat, note: it.note, date: D.today() })
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    const c = C.getCat(it.cat)
+    toast('记好了 ' + c.emoji + ' ¥' + M.fmt(it.amount))
+    closeCqSheet()
+    render(curPage)
+  }
+  async function delCq(i) {
+    const list = store.getCustomQuick()
+    if (i < 0 || i >= list.length) return
+    const ok = await askConfirm('删掉这个档位？', '只删快捷档位，不影响已记的账',
+      { okText: '删除', cancelText: '留着', danger: true })
+    if (!ok) return
+    list.splice(i, 1)
+    if (!(await store.saveCustomQuick(list))) { toast('保存失败，空间可能已满'); return }
+    renderCqList()
+    render(curPage)
+  }
+
+  /* =========================================================================
+     记一笔（add）
+     ========================================================================= */
+  const addState = { type: 'expense', cat: 'food', catTouched: false, autoHint: false, editingId: '', editingYm: '' }
+
+  function openAddEdit(ym, id) {
+    goto('add')
+    const rec = store.getRecords(ym).filter(r => r.id === id)[0]
+    if (!rec) return
+    addState.editingId = rec.id
+    addState.editingYm = ym
+    addState.type = rec.type
+    addState.cat = rec.cat
+    addState.catTouched = true
+    addState.autoHint = false
+    $('add-amt').value = String(rec.amount)
+    $('add-note').value = rec.note || ''
+    $('add-date').value = rec.date
+    $('add-save').textContent = '保存修改'
+    $('add-noteclear').hidden = !rec.note
+    refreshAddView()
+  }
+  function resetAdd() {
+    addState.editingId = ''
+    addState.editingYm = ''
+    addState.type = 'expense'
+    addState.cat = 'food'
+    addState.catTouched = false
+    addState.autoHint = false
+    $('add-amt').value = ''
+    $('add-note').value = ''
+    $('add-date').value = D.today()
+    $('add-save').textContent = '保存这一笔'
+    $('add-noteclear').hidden = true
+    refreshAddView()
+  }
+  function refreshAddView() {
+    const cats = C.catsOf(addState.type)
+    const exists = cats.some(c => c.key === addState.cat)
+    if (!exists) addState.cat = cats[0].key
+    const curCat = C.getCat(addState.cat)
+
+    $('add-typeseg').querySelectorAll('.type-seg-i').forEach(b =>
+      b.classList.toggle('on', b.dataset.t === addState.type))
+    $('add-catbadge').innerHTML = iconImg(curCat.key) + '<span>' + esc(curCat.name) + '</span>'
+    $('add-sectitle').textContent = addState.type === 'expense' ? '支出分类' : '收入分类'
+    $('add-hint-touched').hidden = !addState.catTouched
+    $('add-hint-auto').hidden = !(addState.autoHint && !addState.catTouched)
+
+    $('add-cats').innerHTML = cats.map(c =>
+      '<button class="cat ' + (addState.cat === c.key ? 'on' : '') + '" data-k="' + c.key + '">' +
+      '<span class="c-ico">' + iconImg(c.key) + '</span><span class="c-name">' + esc(c.name) + '</span></button>'
+    ).join('')
+    $('add-cats').querySelectorAll('.cat').forEach(b => {
+      b.onclick = () => {
+        addState.cat = b.dataset.k
+        addState.catTouched = true
+        addState.autoHint = false
+        refreshAddView()
+      }
+    })
+
+    /* 今日概览三格（记前瞄一眼当日累计） */
+    const today = D.today()
+    const ym = today.slice(0, 7)
+    const days = store.recentDays(1)
+    const todayExpense = days.length && days[0].date === today ? days[0].amount : 0
+    const sum = store.summary(ym)
+    const recs = store.getRecords(ym)
+    const count = recs.filter(r => r.date === today).length
+    $('add-stats').innerHTML =
+      '<div class="stat"><span class="stat-k">今日花掉</span><span class="stat-v num">¥' + esc(M.fmt(todayExpense)) + '</span></div>' +
+      '<div class="stat"><span class="stat-k">本月支出</span><span class="stat-v num">¥' + esc(M.fmt(sum.expense)) + '</span></div>' +
+      '<div class="stat"><span class="stat-k">今日已记</span><span class="stat-v num">' + count + ' 笔</span></div>'
+  }
+  function reguess() {
+    if (addState.catTouched) return
+    const guessKey = C.guess($('add-note').value)
+    const cats = C.catsOf(addState.type)
+    const hit = cats.filter(c => c.key === guessKey)[0]
+    if (guessKey && hit && hit.key !== addState.cat) {
+      addState.cat = hit.key
+      addState.autoHint = true
+    } else if (guessKey && hit) {
+      addState.autoHint = true
+    } else {
+      addState.autoHint = false
     }
-    try {
-      const p = await window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: 'JSON 备份', extensions: ['json'] }] })
-      if (!p) return
-      const path = Array.isArray(p) ? p[0] : p
-      const n = await invoke('import_backup_from', { path })
-      await loadCategories()
-      await loadRecords()
-      toast(`已导入 ${n} 条记录`)
-    } catch (e) { toast('导入失败：' + (e && e.message || e)) }
+    refreshAddView()
   }
-  const exportCsvEl = document.getElementById('export-csv')
-  if (exportCsvEl) exportCsvEl.onclick = async () => {
-    await downloadText('简记-流水.csv', buildCSV(), 'text/csv;charset=utf-8'); toast('CSV 已导出')
-  }
-  const exportJsonEl = document.getElementById('export-json')
-  if (exportJsonEl) exportJsonEl.onclick = exportBackup
-  const importJsonEl = document.getElementById('import-json')
-  if (importJsonEl) importJsonEl.onclick = importBackup
-
-  // toast
-  let tt
-  function toast(msg) {
-    const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show')
-    clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2000)
-  }
-
-  // ---------- 热更新（自动更新）----------
-  async function initUpdater() {
-    const $ = id => document.getElementById(id)
-    // 浏览器预览：隐藏全部更新入口（保留"当前版本"占位）
-    if (!IN_TAURI) {
-      ;['row-upd-check', 'row-upd-auto', 'row-upd-src'].forEach(id => { if ($(id)) $(id).style.display = 'none' })
-      if ($('upd-curver')) $('upd-curver').textContent = '浏览器预览模式'
-      if ($('sideVer')) $('sideVer').textContent = '预览模式'
-      return
+  async function submitAdd() {
+    if (submitAdd._busy) return
+    const amount = M.parse($('add-amt').value)
+    if (!(amount > 0)) { toast('先输入金额'); return }
+    submitAdd._busy = true
+    const payload = {
+      type: addState.type, amount: amount,
+      cat: addState.cat, note: $('add-note').value, date: $('add-date').value || D.today()
     }
-    try {
-      const ver = await window.__TAURI__.app.getVersion()
-      if ($('upd-version')) $('upd-version').textContent = 'v' + ver
-      if ($('sideVer')) $('sideVer').textContent = 'v' + ver
-    } catch (e) { /* 版本显示失败不阻塞 */ }
+    if (addState.editingId) {
+      await store.updateRecord(addState.editingYm, addState.editingId, payload)
+    } else {
+      await store.addRecord(payload)
+    }
+    submitAdd._busy = false
+    /* P0：写库失败时不提示成功、不清表单 */
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    toast(addState.editingId ? '改好了' : '记好了')
+    resetAdd()
+  }
 
-    // 偏好持久化：复用顶层 getSet/setSet（setSet 失败静默）
-    let autoCheck = (await getSet('auto_update_check')) !== '0'   // 默认开
-    let src = await getSet('update_source') || 'auto'             // auto | official | mirror
+  /* =========================================================================
+     统计（stats）
+     ========================================================================= */
+  const stState = { ym: '', expandedCat: '', pickerShow: false, pickerStep: 'year', years: [], decadeStart: 2020, pickedYear: 0, pickedMonth: 0, minYear: 2000, maxYear: 0, maxMonth: 12, canNextDecade: false }
 
-    const autoEl = $('upd-auto')
-    if (autoEl) autoEl.classList.toggle('on', autoCheck)
-    if (autoEl) autoEl.onclick = () => { autoCheck = !autoCheck; autoEl.classList.toggle('on', autoCheck); setSet('auto_update_check', autoCheck ? '1' : '0').catch(() => {}) }
-    const SRC_LABEL = { auto: '自动', official: '官方 GitHub', mirror: '国内镜像' }
-    const srcEl = $('upd-src')
-    if (srcEl) {
-      srcEl.textContent = SRC_LABEL[src] + ' ›'
-      srcEl.onclick = () => {
-        const order = ['auto', 'official', 'mirror']
-        src = order[(order.indexOf(src) + 1) % order.length]
-        srcEl.textContent = SRC_LABEL[src] + ' ›'
-        setSet('update_source', src).catch(() => {})
-        toast('更新下载源：' + SRC_LABEL[src])
+  function renderStats() {
+    if (!stState.ym) stState.ym = D.thisMonth()
+    loadStats(stState.ym)
+  }
+
+  function loadStats(ym) {
+    const cur = D.thisMonth()
+    const sum = store.summary(ym)
+    const prev = store.summary(D.shiftMonth(ym, -1))
+    const records = store.getRecords(ym)
+
+    /* 与上月对比 */
+    const diff = M.toYuan(M.toCents(sum.expense) - M.toCents(prev.expense))
+    let diffText = ''
+    let diffTone = 'pill-plain'
+    if (prev.expense > 0 && Math.abs(diff) >= 1) {
+      const p = Math.round(Math.abs(diff) / prev.expense * 100)
+      if (diff > 0) { diffText = '比上月多 ¥' + M.fmt(diff) + ' ↑' + p + '%'; diffTone = 'pill-warn' }
+      else { diffText = '比上月少 ¥' + M.fmt(-diff) + ' ↓' + p + '%'; diffTone = 'pill-ok' }
+    } else if (prev.expense === 0 && sum.expense > 0) {
+      diffText = '上月没有记录'
+    }
+
+    /* 分类排行（含展开明细） */
+    const byCat = sum.byCat.map(function (c) {
+      const recs = records.filter(r => r.type === 'expense' && r.cat === c.key).slice(0, 12).map(r => ({
+        id: r.id, when: D.human(r.date), note: r.note || C.catName(r.cat), amountText: M.fmt(r.amount)
+      }))
+      return {
+        key: c.key, name: c.name, emoji: c.emoji, color: c.color,
+        amount: c.amount, amountRaw: c.amount, amountText: M.fmt(c.amount),
+        count: c.count, pct: c.pct, pctW: Math.max(3, c.pct), records: recs
+      }
+    })
+    const legendCats = byCat.slice(0, 6)
+
+    /* 分项预算进度 */
+    const bs = store.budgetStatus(ym)
+    const catBudgets = (bs.cats || []).map(c => ({
+      key: c.key, name: c.name, emoji: c.emoji, color: c.color,
+      usedText: M.fmt(c.used), budgetText: M.fmt(c.budget),
+      pct: c.pct, w: Math.min(100, Math.max(0, c.pct)), status: c.status,
+      tip: c.status === 'over' ? '超出 ¥' + M.fmt(Math.abs(c.left)) : '还能花 ¥' + M.fmt(c.left)
+    }))
+
+    /* 近 6 个月趋势 */
+    const rawTrend = store.recentMonths(6, ym)
+    let maxT = 0, sumT = 0
+    let top = { amount: -1, label: '' }
+    for (let i = 0; i < rawTrend.length; i++) {
+      if (rawTrend[i].amount > maxT) maxT = rawTrend[i].amount
+      sumT += M.toCents(rawTrend[i].amount)
+      if (rawTrend[i].amount > top.amount && rawTrend[i].ym !== cur) top = { amount: rawTrend[i].amount, label: rawTrend[i].label }
+    }
+    const trend = rawTrend.map(t => {
+      const isCur = t.ym === cur
+      return {
+        ym: t.ym, label: t.label, amount: t.amount,
+        h: maxT > 0 ? Math.max(4, Math.round(t.amount / maxT * 100)) : 4,
+        isCur: isCur,
+        color: isCur ? store.themeColor()
+          : (t.amount === maxT && maxT > 0 ? store.themeTint(0.5) : store.themeTint(0.8))
+      }
+    })
+    const trendAvg = M.toYuan(Math.round(sumT / rawTrend.length))
+
+    stState.ym = ym
+    const monthLabelText = D.monthLabel(ym)
+    const canNext = ym < cur
+
+    $('st-prev').classList.toggle('off', false)
+    $('st-next').classList.toggle('off', !canNext)
+    $('st-monthlabel').innerHTML =
+      '<span>' + esc(monthLabelText) + '</span>' +
+      (ym === cur ? '<span class="mb-live">进行中</span>' : '') +
+      '<span class="mb-caret">▾</span>'
+
+    $('st-total').innerHTML =
+      '<div class="row-between"><span class="card-sub">' + esc(monthLabelText) + '一共花了</span>' +
+      (diffText ? '<span class="pill ' + diffTone + '">' + esc(diffText) + '</span>' : '') + '</div>' +
+      '<div class="total-num num"><span class="total-cur">¥</span>' + esc(M.fmt(sum.expense)) + '</div>' +
+      '<div class="total-sub">' + (sum.dayCount ? sum.dayCount + ' 笔 · 日均 ¥' + esc(M.fmt(sum.avgPerDay)) : '这个月还没有记录') + '</div>' +
+      '<div class="row-between total-foot"><span class="t-sm muted-2">收入 ¥' + esc(M.fmt(sum.income)) + '</span>' +
+      '<span class="t-sm muted-2">结余 ¥' + esc(M.fmt(sum.balance)) + '</span></div>'
+
+    if (byCat.length) {
+      $('st-donutcard').innerHTML =
+        '<span class="card-title">钱花在哪了</span>' +
+        '<div class="donut-box"><canvas id="donut" class="donut"></canvas>' +
+        '<div class="donut-legend">' + legendCats.map(c =>
+          '<div class="lg"><span class="lg-dot" style="background:' + c.color + '"></span>' +
+          '<span class="lg-name">' + esc(c.name) + '</span><span class="lg-pct num">' + c.pct + '%</span></div>'
+        ).join('') + '</div></div>' +
+        '<div class="rank">' + byCat.map(c =>
+          '<div class="rk" data-k="' + esc(c.key) + '">' +
+          '<div class="rk-head"><span class="rk-ico">' + iconImg(c.key) + '</span>' +
+          '<span class="rk-name">' + esc(c.name) + '</span>' +
+          '<span class="rk-count">' + c.count + '笔</span>' +
+          '<span class="rk-amt num">¥' + esc(c.amountText) + '</span>' +
+          '<span class="rk-pct num">' + c.pct + '%</span></div>' +
+          '<div class="rk-bar"><div class="rk-fill" style="width:' + c.pctW + '%;background:' + c.color + '"></div></div>' +
+          (stState.expandedCat === c.key
+            ? '<div class="rk-detail">' + c.records.map(rec =>
+              '<div class="rd-row"><span class="rd-date">' + esc(rec.when) + '</span>' +
+              '<span class="rd-note">' + esc(rec.note) + '</span>' +
+              '<span class="rd-amt num">¥' + esc(rec.amountText) + '</span></div>').join('') + '</div>'
+            : '') +
+          '</div>'
+        ).join('') + '</div>' +
+        '<div class="tap-hint">点分类可以展开看每一笔</div>'
+      $('st-donutcard').querySelectorAll('.rk').forEach(el => {
+        el.onclick = () => {
+          stState.expandedCat = stState.expandedCat === el.dataset.k ? '' : el.dataset.k
+          loadStats(stState.ym)
+        }
+      })
+      drawDonut(byCat, sum.expense)
+    } else {
+      $('st-donutcard').innerHTML =
+        '<span class="card-title">钱花在哪了</span>' +
+        '<div class="empty"><div class="empty-emoji"><img src="assets/icons/empty-chart.svg" alt="" /></div>' +
+        '<div class="empty-txt">这个月还没有记录</div><div class="empty-txt">记上几笔，这里就能看出钱去哪了</div></div>'
+    }
+
+    $('st-cbudgetwrap').hidden = !catBudgets.length
+    $('st-cbudget').innerHTML = catBudgets.map(c =>
+      '<div class="cb"><div class="cb-head"><span class="cb-name">' + esc(c.name) + '</span>' +
+      '<div class="cb-right"><span class="cb-amt num">¥' + esc(c.usedText) + '</span>' +
+      '<span class="cb-of num">/ ¥' + esc(c.budgetText) + '</span></div></div>' +
+      '<div class="bar"><div class="bar-fill ' + c.status + '" style="width:' + c.w + '%"></div></div>' +
+      '<div class="cb-foot"><span class="cb-pct ' + c.status + '">已用 ' + c.pct + '%</span>' +
+      '<span class="cb-tip">' + esc(c.tip) + '</span></div></div>'
+    ).join('')
+
+    $('st-trendavg').textContent = maxT > 0 ? '月均 ¥' + M.fmt(trendAvg) : ''
+    $('st-trend').innerHTML = trend.map(t =>
+      '<div class="tr-col"><div class="tr-track"><div class="tr-fill" style="height:' + t.h + '%;background:' + t.color + '"></div></div>' +
+      '<span class="tr-x ' + (t.isCur ? 'cur' : '') + '">' + esc(t.label) + '</span></div>'
+    ).join('')
+    $('st-trendfoot').innerHTML = top.amount > 0
+      ? '花得最多的是 <span class="bold">' + esc(top.label) + '</span>，¥' + esc(M.fmt(top.amount)) : ''
+  }
+
+  /* 环形图（canvas 2d，明暗换色口径与小程序一致） */
+  function drawDonut(cats, total) {
+    const canvas = document.getElementById('donut')
+    if (!canvas || !(total > 0)) return
+    const dpr = window.devicePixelRatio || 2
+    const w = canvas.clientWidth, h = canvas.clientHeight
+    if (!w || !h) return
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    const ctx = canvas.getContext('2d')
+    ctx.scale(dpr, dpr)
+    ctx.clearRect(0, 0, w, h)
+    const cx = w / 2, cy = h / 2
+    const margin = 4
+    const ringRatio = 0.27
+    const r = (Math.min(w, h) / 2 - margin) / (1 + ringRatio / 2)
+    const lw = r * ringRatio
+    const dark = store.isDark()
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = dark ? '#3A3A3C' : '#F6EEED'
+    ctx.lineWidth = lw
+    ctx.lineCap = 'butt'
+    ctx.stroke()
+    if (cats.length && total > 0) {
+      let start = -Math.PI / 2
+      for (let i = 0; i < cats.length; i++) {
+        const c = cats[i]
+        const ang = (c.amountRaw / total) * Math.PI * 2
+        if (ang <= 0) continue
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, start + 0.006, start + ang - 0.006)
+        ctx.strokeStyle = c.color
+        ctx.lineWidth = lw
+        ctx.stroke()
+        start += ang
       }
     }
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = dark ? '#9E9E9E' : '#A2939A'
+    ctx.font = '12px sans-serif'
+    ctx.fillText('共花', cx, cy - 17)
+    ctx.fillStyle = dark ? '#F5F5F5' : '#2E2A2B'
+    ctx.font = 'bold 21px sans-serif'
+    ctx.fillText('¥' + M.short(total), cx, cy + 11)
+  }
 
-    // 检查 + 询问 + 下载安装
-    // 状态持久显示在「检查更新」行副文字（upd-status），失败原因不丢失，便于诊断
-    // 确认框必须自绘：WebView2 下原生 confirm() 不可靠（对话框不显示 / 同步返回假值）
-    const STATUS_EL = $('upd-status')
-    const STATUS_DEFAULT = '自动下载并静默安装新版本'
-    function setStatus(t) { if (STATUS_EL) STATUS_EL.textContent = t || STATUS_DEFAULT }
-    function confirmUpdate(msg) {
-      return new Promise(resolve => {
-        const mask = $('upd-modal'), msgEl = $('upd-modal-msg')
-        if (!mask || !msgEl) { resolve(false); return }
-        msgEl.textContent = msg
-        mask.classList.add('show')
-        const ok = $('upd-modal-ok'), cancel = $('upd-modal-cancel')
-        const done = v => {
-          mask.classList.remove('show')
-          ok.onclick = cancel.onclick = mask.onclick = null
-          resolve(v)
+  /* 年月两级选择器（年份网格 → 月份网格） */
+  function buildDecade(start) {
+    const out = []
+    for (let y = start; y < start + 10; y++) out.push(y)
+    return out
+  }
+  function openMonthPicker() {
+    const cur = D.parseMonth(D.thisMonth())
+    const sel = D.parseMonth(stState.ym || D.thisMonth())
+    const decade = Math.floor(sel.y / 10) * 10
+    const maxDecade = Math.floor(cur.y / 10) * 10
+    Object.assign(stState, {
+      pickerShow: true, pickerStep: 'year',
+      years: buildDecade(decade), decadeStart: decade,
+      pickedYear: sel.y, pickedMonth: sel.m,
+      minYear: 2000, maxYear: cur.y,
+      maxMonth: cur.y === sel.y ? cur.m : 12,
+      canNextDecade: decade < maxDecade
+    })
+    renderPicker()
+    $('py-sheet').hidden = false
+    $('py-mask').classList.add('show')
+    requestAnimationFrame(() => $('py-sheet').classList.add('show'))
+  }
+  function closePicker() {
+    stState.pickerShow = false
+    $('py-sheet').classList.remove('show')
+    $('py-mask').classList.remove('show')
+    setTimeout(() => { $('py-sheet').hidden = true }, 300)
+  }
+  function renderPicker() {
+    const cur = D.thisMonth()
+    $('py-stepback').hidden = stState.pickerStep !== 'month'
+    $('py-decade').hidden = stState.pickerStep === 'month'
+    $('py-decade').textContent = stState.decadeStart + ' - ' + (stState.decadeStart + 9)
+    $('py-yearview').hidden = stState.pickerStep !== 'year'
+    $('py-monthview').hidden = stState.pickerStep !== 'month'
+    if (stState.pickerStep === 'year') {
+      const maxDecade = Math.floor(stState.maxYear / 10) * 10
+      $('py-prevdec').classList.toggle('off', stState.decadeStart - 10 < stState.minYear)
+      $('py-nextdec').classList.toggle('off', stState.decadeStart >= maxDecade)
+      $('py-declabel').textContent = stState.decadeStart + ' - ' + (stState.decadeStart + 9)
+      $('py-years').innerHTML = stState.years.map(y =>
+        '<button class="py-cell ' + (y === stState.pickedYear ? 'on' : '') + ' ' + (y > stState.maxYear ? 'off' : '') + '" data-y="' + y + '">' + y + '</button>'
+      ).join('')
+      $('py-years').querySelectorAll('.py-cell').forEach(b => {
+        b.onclick = () => {
+          const y = Number(b.dataset.y)
+          if (y > stState.maxYear) { toast('还没到这一年'); return }
+          stState.pickerStep = 'month'
+          stState.pickedYear = y
+          stState.maxMonth = y === D.parseMonth(cur).y ? D.parseMonth(cur).m : 12
+          renderPicker()
         }
-        ok.onclick = () => done(true)
-        cancel.onclick = () => done(false)
-        mask.onclick = e => { if (e.target === mask) done(false) }
+      })
+    } else {
+      $('py-yeartitle').textContent = stState.pickedYear + ' 年'
+      $('py-months').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m =>
+        '<button class="py-cell month ' + (m === stState.pickedMonth ? 'on' : '') + ' ' + (m > stState.maxMonth ? 'off' : '') + '" data-m="' + m + '">' + m + '月</button>'
+      ).join('')
+      $('py-months').querySelectorAll('.py-cell').forEach(b => {
+        b.onclick = () => {
+          const m = Number(b.dataset.m)
+          if (m > stState.maxMonth) { toast('还不能选未来的月份'); return }
+          const ym = stState.pickedYear + '-' + (m < 10 ? '0' + m : m)
+          closePicker()
+          stState.expandedCat = ''
+          loadStats(ym)
+        }
       })
     }
-    let busy = false
-    async function checkAndOffer(silent) {
-      if (busy) return
-      busy = true
-      try {
-        if (!silent) { toast('正在检查更新…'); setStatus('正在检查更新…') }
-        const meta = await invoke('updater_check', { source: src })
-        if (!meta) {
-          if (!silent) { toast('当前已是最新版本'); setStatus('当前已是最新版本（' + new Date().toLocaleTimeString() + ' 检查）') }
-          return
-        }
-        setStatus('发现新版本 v' + meta.version)
-        const yes = await confirmUpdate(`发现新版本 v${meta.version}（当前 v${meta.current_version}）\n\n${meta.notes || '暂无更新说明'}\n\n立即下载并安装？`)
-        if (!yes) { setStatus('已跳过 v' + meta.version + '，可再次点击「立即检查」'); return }
-        let lastPct = -10
-        const stop = await window.__TAURI__.event.listen('updater://progress', ev => {
-          const { downloaded, total } = ev.payload || {}
-          if (total) {
-            const pct = Math.floor(downloaded / total * 100)
-            if (pct >= lastPct + 10) { lastPct = pct; toast(`下载中 ${pct}%`); setStatus('下载中 ' + pct + '%') }
-          }
-        })
-        try {
-          toast('开始下载更新…'); setStatus('开始下载更新…')
-          await invoke('updater_download_install')
-          toast('下载完成，正在安装…'); setStatus('下载完成，正在安装…')
-          // Windows 下 install 会自动退出应用；若未退出则主动重启
-          setTimeout(async () => {
-            try { await window.__TAURI__.process.relaunch() } catch (e) { }
-          }, 3000)
-        } finally { stop().catch(() => {}) }
-      } catch (e) {
-        const msg = '检查更新失败：' + (e && e.message || e)
-        if (!silent) toast(msg)
-        setStatus(msg) // 失败原因持久显示（含静默检查），便于诊断
-      } finally { busy = false }
-    }
-    if ($('upd-check')) $('upd-check').onclick = () => checkAndOffer(false)
-
-    // 启动静默检查：延后 3s 避开启动期 IO，异常吞掉
-    if (autoCheck) setTimeout(() => checkAndOffer(true), 3000)
   }
 
-  // ---------- 每日提醒设置 ----------
-  async function initReminder() {
-    const toggle = document.getElementById('remind-toggle')
-    const timeEl = document.getElementById('remind-time')
-    const desc = document.getElementById('remind-desc')
-    if (!toggle || !timeEl || !desc) return
-    let enabled = (await getSet('remind_daily_enabled')) !== '0'   // 默认开
-    let time = (await getSet('remind_daily_time')) || '21:00'
-    timeEl.value = /^\d{2}:\d{2}$/.test(time) ? time : '21:00'
-    toggle.classList.toggle('on', enabled)
-    const paint = () => {
-      desc.textContent = IN_TAURI
-        ? `应用运行时每天 ${timeEl.value} 提醒（关闭应用不提醒）`
-        : `浏览器预览：已保存 ${timeEl.value}，不会实际弹通知`
+  /* =========================================================================
+     预算（budget）
+     ========================================================================= */
+  const bdState = { cats: [], historyAvg: null, historyText: '' }
+
+  function renderBudget() {
+    const s = store.getSettings()
+    const budgetCats = s.budget.cats || {}
+    bdState.cats = C.BUDGET_CATS.map(c => {
+      const v = M.parse(budgetCats[c.key])
+      return { key: c.key, name: c.name, emoji: c.emoji, color: c.color, soft: c.soft, value: v > 0 ? String(v) : '' }
+    })
+    const prev = store.summary(D.shiftMonth(D.thisMonth(), -1))
+    const sugText = prev.expense > 0 ? M.fmt(M.toYuan(Math.ceil(M.toCents(prev.expense) / 1000) * 1000)) : ''
+    $('bd-total').value = s.budget.total > 0 ? String(M.parse(s.budget.total)) : ''
+    calcHistory()
+    renderBdCats()
+    $('bd-sugs').innerHTML =
+      (sugText ? '<button class="sug-pill" id="bd-usesug">按上个月花销填 ¥' + esc(sugText) + '</button>' : '') +
+      (bdState.historyText ? '<button class="sug-pill" id="bd-usehist">按近 3 个月平均填 ¥' + esc(bdState.historyText) + '</button>' : '')
+    const usesug = $('bd-usesug')
+    if (usesug) usesug.onclick = () => {
+      $('bd-total').value = String(M.parse(usesug.textContent.replace('按上个月花销填 ¥', '')))
+      recalcBd()
     }
-    paint()
-    toggle.onclick = async () => {
-      enabled = !enabled; toggle.classList.toggle('on', enabled)
-      try { await setSet('remind_daily_enabled', enabled ? '1' : '0') }
-      catch (e) { enabled = !enabled; toggle.classList.toggle('on', enabled); toast('保存失败，请重试'); return }
-      toast(enabled ? '已开启每日提醒' : '已关闭每日提醒')
+    const usehist = $('bd-usehist')
+    if (usehist) usehist.onclick = fillByHistory
+    $('bd-fillhist').hidden = !bdState.historyText
+    $('bd-clear').hidden = !(M.parse($('bd-total').value) > 0)
+    recalcBd()
+  }
+  function renderBdCats() {
+    $('bd-cats').innerHTML = bdState.cats.map((c, i) =>
+      '<div class="cb-item"><div class="cb-ico">' + iconImg(c.key) + '</div>' +
+      '<span class="bitem-name">' + esc(c.name) + '</span>' +
+      '<div class="bitem-right"><span class="bitem-cur">¥</span>' +
+      '<input class="bitem-in num" data-i="' + i + '" inputmode="decimal" placeholder="不限" value="' + esc(c.value) + '" /></div></div>'
+    ).join('')
+    $('bd-cats').querySelectorAll('.bitem-in').forEach(inp => {
+      inp.oninput = () => {
+        bdState.cats[Number(inp.dataset.i)].value = inp.value
+        recalcBd()
+      }
+    })
+  }
+  function recalcBd() {
+    let cents = 0
+    const totalCents = M.toCents(M.parse($('bd-total').value))
+    for (let i = 0; i < bdState.cats.length; i++) cents += M.toCents(M.parse(bdState.cats[i].value))
+    const sum = M.toYuan(cents)
+    let diffText = ''
+    let warn = false
+    if (cents > 0 && totalCents > 0) {
+      const d = M.toYuan(cents - totalCents)
+      if (d > 0) { diffText = '超出总额 ¥' + M.fmt(d); warn = true }
+      else if (d >= -100) diffText = '刚好对上'
+      else { diffText = '比总额少 ¥' + M.fmt(-d) + '，这部分没有管'; warn = true }
+    } else if (cents > 0 && totalCents === 0) {
+      diffText = '还没填总预算'
+      warn = true
     }
-    timeEl.addEventListener('change', async () => {
-      const v = timeEl.value
-      if (!/^\d{2}:\d{2}$/.test(v)) { toast('时间格式无效'); timeEl.value = time; return }
-      try { await setSet('remind_daily_time', v); time = v; paint(); toast('提醒时间已设为 ' + v) }
-      catch (e) { timeEl.value = time; toast('保存失败，请重试') }
+    $('bd-sum').className = 'cb-sum' + (warn ? ' warn' : '')
+    $('bd-sum').innerHTML = '<span>分项合计 ¥' + esc(M.fmt(sum)) + '</span><span class="cb-diff">' + esc(diffText) + '</span>'
+    $('bd-clear').hidden = !(totalCents > 0)
+  }
+  function calcHistory() {
+    const cur = D.thisMonth()
+    const months = [D.shiftMonth(cur, -1), D.shiftMonth(cur, -2), D.shiftMonth(cur, -3)]
+    const acc = {}
+    let validMonths = 0
+    for (let i = 0; i < months.length; i++) {
+      const s = store.summary(months[i])
+      if (s.expense > 0) validMonths++
+      for (let j = 0; j < s.byCat.length; j++) {
+        acc[s.byCat[j].key] = (acc[s.byCat[j].key] || 0) + M.toCents(s.byCat[j].amount)
+      }
+    }
+    if (!validMonths) { bdState.historyText = ''; bdState.historyAvg = null; return null }
+    const avg = {}
+    let totalCents = 0
+    Object.keys(acc).forEach(k => {
+      const v = Math.ceil(acc[k] / validMonths / 1000) * 1000
+      avg[k] = M.toYuan(v)
+      totalCents += v
+    })
+    bdState.historyAvg = avg
+    bdState.historyText = M.fmt(M.toYuan(totalCents))
+    return avg
+  }
+  function fillByHistory() {
+    const avg = bdState.historyAvg || calcHistory()
+    if (!avg) { toast('历史数据还不够，先记两周账'); return }
+    bdState.cats = bdState.cats.map(c => Object.assign({}, c, { value: avg[c.key] > 0 ? String(avg[c.key]) : '' }))
+    let totalCents = 0
+    Object.keys(avg).forEach(k => { totalCents += M.toCents(avg[k]) })
+    $('bd-total').value = String(M.toYuan(totalCents))
+    renderBdCats()
+    recalcBd()
+    toast('已按历史填好，可再微调')
+  }
+  async function saveBudget() {
+    const total = M.parse($('bd-total').value)
+    const cats = {}
+    for (let i = 0; i < bdState.cats.length; i++) {
+      const v = M.parse(bdState.cats[i].value)
+      if (v > 0) cats[bdState.cats[i].key] = v
+    }
+    const s = store.getSettings()
+    s.budget = { total: total, cats: cats }
+    await store.saveSettings(s)
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    toast(total > 0 ? '预算存好了' : '已保存')
+  }
+  async function clearBudget() {
+    const ok = await askConfirm('清空预算？', '账目记录不会受影响', { okText: '清空', danger: true })
+    if (!ok) return
+    const s = store.getSettings()
+    s.budget = { total: 0, cats: {} }
+    await store.saveSettings(s)
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    bdState.cats = bdState.cats.map(c => Object.assign({}, c, { value: '' }))
+    $('bd-total').value = ''
+    renderBdCats()
+    recalcBd()
+    toast('已清空')
+  }
+
+  /* =========================================================================
+     攒钱目标（goal）
+     ========================================================================= */
+  const EMOJIS = ['🎓', '✈️', '🏠', '🚗', '💍', '🎁', '🧳', '📱', '🐷', '🎨', '🏥', '🎉']
+  const DEPOSIT_QUICK = [200, 500, 1000, 2000]
+  const glState = { sheetMode: '', form: {}, depositGoal: {}, depositMode: 'in' }
+
+  function renderGoal() {
+    const raw = store.getGoals()
+    let savedCents = 0, targetCents = 0
+    const goals = raw.map(function (g) {
+      const target = M.parse(g.target)
+      const saved = M.parse(g.saved)
+      const pct = target > 0 ? Math.round(saved / target * 100) : 0
+      const done = target > 0 && saved >= target
+      const need = M.toYuan(Math.max(0, M.toCents(target) - M.toCents(saved)))
+      savedCents += M.toCents(saved)
+      targetCents += M.toCents(target)
+      let subline = ''
+      let dl = null
+      if (g.deadline) {
+        dl = D.daysUntil(g.deadline)
+        if (dl > 0) subline = '目标日 ' + D.fmtMD(g.deadline) + ' · 还剩 ' + dl + ' 天'
+        else subline = '目标日 ' + D.fmtMD(g.deadline) + '（已过期）'
+      }
+      if (!subline || done) subline = done ? '已经达成了' : ('还差 ¥' + M.fmt(need))
+      let tip = ''
+      if (done) tip = '🎉 目标达成，这笔钱可以放心用了'
+      else if (dl !== null && dl > 0) {
+        const months = Math.max(1, Math.ceil(dl / 30))
+        tip = '每月存 ¥' + M.fmt(M.toYuan(Math.ceil(M.toCents(need) / months))) + '，就能在目标日前存够'
+      }
+      if (!tip) {
+        const createdDays = Math.max(1, Math.round((Date.now() - (g.createdAt || Date.now())) / 86400000))
+        const speedCents = M.toCents(saved) / createdDays
+        if (speedCents > 1 && need > 0) {
+          const daysNeed = Math.ceil(M.toCents(need) / speedCents)
+          if (daysNeed <= 365 * 3) {
+            const fd = new Date(Date.now() + daysNeed * 86400000)
+            tip = '按现在的速度，大约 ' + fd.getFullYear() + ' 年 ' + (fd.getMonth() + 1) + ' 月能存够'
+          } else {
+            tip = '按现在的速度还得好几年，可以把每月目标调高一点'
+          }
+        }
+      }
+      if (!tip) tip = '还差 ¥' + M.fmt(need) + '，存一笔就开始积累吧'
+      return {
+        id: g.id, name: g.name, emoji: g.emoji || '🎯',
+        pct: pct, done: done, w: Math.min(100, Math.max(2, pct)),
+        barColor: done ? 'linear-gradient(90deg,#6FD3B8,#3FAE9F)' : 'linear-gradient(90deg,#FFD08A,#F5A93B)',
+        savedText: M.fmt(saved), targetText: M.fmt(target),
+        subline: subline, tip: tip
+      }
+    })
+    const totalPct = targetCents > 0 ? Math.round(savedCents / targetCents * 100) : 0
+
+    $('gl-hero').innerHTML =
+      '<div class="hero-mask"></div>' +
+      '<span class="hero-label">已经攒下</span>' +
+      '<div class="hero-num"><span class="hero-cur">¥</span><span class="hero-amt num">' + esc(M.fmt(M.toYuan(savedCents))) + '</span></div>' +
+      '<div class="hero-sub">' + (goals.length ? '目标总额 ¥' + esc(M.fmt(M.toYuan(targetCents))) + ' · 完成 ' + totalPct + '%' : '给未来的自己定一个目标吧') + '</div>' +
+      '<div class="hero-bar"><div class="bar"><div class="bar-fill" style="width:' + Math.min(100, totalPct) + '%;background:#FFFFFF"></div></div></div>'
+
+    let html = ''
+    goals.forEach((g, i) => {
+      html += '<div class="gcard">' +
+        '<div class="gc-head" data-edit="' + i + '">' +
+        '<div class="gc-ico">' + esc(g.emoji) + '</div>' +
+        '<div class="gc-title"><span class="gc-name">' + esc(g.name) + '</span>' +
+        '<span class="gc-sub">' + esc(g.subline) + '</span></div>' +
+        '<span class="gc-pct num ' + (g.done ? 'done' : 'pending') + '">' + g.pct + '%</span></div>' +
+        '<div class="bar"><div class="bar-fill" style="width:' + g.w + '%;background:' + g.barColor + '"></div></div>' +
+        '<div class="gc-foot"><span class="gc-saved num">¥' + esc(g.savedText) + '</span>' +
+        '<span class="gc-target num">/ ¥' + esc(g.targetText) + '</span>' +
+        '<button class="gc-btn" data-deposit="' + i + '">存一笔</button></div>' +
+        (g.tip ? '<div class="gc-tip"><span>' + esc(g.tip) + '</span></div>' : '') +
+        '</div>'
+    })
+    if (!goals.length) {
+      html += '<div class="empty"><div class="empty-emoji"><img src="assets/icons/empty-pig.svg" alt="" /></div>' +
+        '<div class="empty-txt">还没有攒钱目标</div><div class="empty-txt">宝宝教育金、家庭旅行、换台冰箱……</div>' +
+        '<div class="empty-txt">写下来，才知道每个月该留多少</div></div>'
+    }
+    html += '<button class="btn btn-ghost new-btn" id="gl-new">＋ 新的攒钱目标</button>'
+    html += '<div class="foot-note">攒钱进度是手动记的，不会自动从账本里扣 —— 免得你记错了还要对账。</div>'
+    $('gl-list').innerHTML = html
+    $('gl-new').onclick = () => openGoalEdit(null)
+    $('gl-list').querySelectorAll('[data-edit]').forEach(el => {
+      el.onclick = () => openGoalEdit(Number(el.dataset.edit))
+    })
+    $('gl-list').querySelectorAll('[data-deposit]').forEach(el => {
+      el.onclick = () => openDeposit(Number(el.dataset.deposit))
+    })
+
+    /* 「我的」页目标文案同步 */
+    $('me-goaltext').textContent = raw.length ? '已攒 ¥' + M.fmt(M.toYuan(savedCents)) : '还没有目标'
+  }
+
+  function closeGlSheets() {
+    glState.sheetMode = ''
+    ;['gl-sheet-edit', 'gl-sheet-deposit'].forEach(id => {
+      $(id).classList.remove('show')
+    })
+    $('gl-mask').classList.remove('show')
+    setTimeout(() => {
+      $('gl-sheet-edit').hidden = true
+      $('gl-sheet-deposit').hidden = true
+    }, 300)
+  }
+  function openGoalEdit(idx) {
+    const raw = idx === null ? null : store.getGoals()[idx]
+    glState.form = raw ? {
+      id: raw.id, name: raw.name, emoji: raw.emoji || '🎓',
+      target: String(M.parse(raw.target) || ''),
+      saved: String(M.parse(raw.saved) || ''),
+      deadline: raw.deadline || ''
+    } : { id: '', name: '', emoji: '🎓', target: '', saved: '', deadline: '' }
+    $('gl-edittitle').textContent = glState.form.id ? '修改目标' : '新目标'
+    $('gl-name').value = glState.form.name
+    $('gl-target').value = glState.form.target
+    $('gl-saved').value = glState.form.saved
+    $('gl-deadline').value = glState.form.deadline
+    $('gl-deadclear').hidden = !glState.form.deadline
+    $('gl-del').hidden = !glState.form.id
+    renderEmojiRow()
+    $('gl-sheet-edit').hidden = false
+    $('gl-mask').classList.add('show')
+    requestAnimationFrame(() => $('gl-sheet-edit').classList.add('show'))
+  }
+  function renderEmojiRow() {
+    $('gl-emojis').innerHTML = EMOJIS.map(e =>
+      '<button class="em ' + (glState.form.emoji === e ? 'on' : '') + '" data-e="' + e + '">' + e + '</button>'
+    ).join('')
+    $('gl-emojis').querySelectorAll('.em').forEach(b => {
+      b.onclick = () => { glState.form.emoji = b.dataset.e; renderEmojiRow() }
+    })
+  }
+  async function submitGoalForm() {
+    const f = glState.form
+    f.name = $('gl-name').value.trim()
+    f.target = $('gl-target').value
+    f.saved = $('gl-saved').value
+    f.deadline = $('gl-deadline').value
+    if (!f.name) { toast('给它起个名字吧'); return }
+    const target = M.parse(f.target)
+    if (!(target > 0)) { toast('填一下目标金额'); return }
+    const saved = M.parse(f.saved)
+    if (f.id) {
+      await store.updateGoal(f.id, { name: f.name, emoji: f.emoji, target: target, saved: saved, deadline: f.deadline })
+    } else {
+      if (!(await store.addGoal({ name: f.name, emoji: f.emoji, target: target, saved: saved, deadline: f.deadline }))) {
+        toast('名称或金额不合规'); return
+      }
+    }
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    toast(f.id ? '改好了' : '目标已定下')
+    closeGlSheets()
+    renderGoal()
+  }
+  async function removeGoal() {
+    const id = glState.form.id
+    const ok = await askConfirm('删掉这个目标？', '已经存的钱不会自动记账，删了只是不再跟踪',
+      { okText: '删除', danger: true })
+    if (!ok) return
+    await store.deleteGoal(id)
+    closeGlSheets()
+    renderGoal()
+    toast('已删除')
+  }
+  function openDeposit(idx) {
+    const g = store.getGoals()[idx]
+    if (!g) return
+    glState.depositGoal = { id: g.id, name: g.name }
+    glState.depositMode = 'in'
+    $('dp-title').textContent = '给「' + g.name + '」存一笔'
+    $('dp-amt').value = ''
+    $('dp-tip').textContent = '还差 ¥' + M.fmt(M.toYuan(Math.max(0, M.toCents(M.parse(g.target)) - M.toCents(M.parse(g.saved))))) + ' 就够目标了'
+    renderDpSeg()
+    renderDpQuick()
+    $('gl-sheet-deposit').hidden = false
+    $('gl-mask').classList.add('show')
+    requestAnimationFrame(() => $('gl-sheet-deposit').classList.add('show'))
+  }
+  function renderDpSeg() {
+    $('dp-seg').querySelectorAll('.dp-seg-i').forEach(b =>
+      b.classList.toggle('on', b.dataset.m === glState.depositMode))
+  }
+  function renderDpQuick() {
+    $('dp-quick').innerHTML = DEPOSIT_QUICK.map(v =>
+      '<button class="dq" data-v="' + v + '">+' + v + '</button>'
+    ).join('')
+    $('dp-quick').querySelectorAll('.dq').forEach(b => {
+      b.onclick = () => {
+        const cur = M.parse($('dp-amt').value)
+        $('dp-amt').value = String(M.toYuan(M.toCents(cur) + M.toCents(Number(b.dataset.v))))
+      }
+    })
+  }
+  async function submitDeposit() {
+    const amt = M.parse($('dp-amt').value)
+    if (!(amt > 0)) { toast('先输入金额'); return }
+    const delta = glState.depositMode === 'out' ? -amt : amt
+    const goal = store.getGoals().filter(g => g.id === glState.depositGoal.id)[0]
+    if (!goal) { toast('目标已不存在'); return }
+    await store.depositToGoal(glState.depositGoal.id, delta)
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    toast((delta > 0 ? '存进 ¥' : '取出 ¥') + M.fmt(amt))
+    closeGlSheets()
+    renderGoal()
+  }
+
+  /* =========================================================================
+     我的（me）
+     ========================================================================= */
+  function renderMe() {
+    const s = store.stats()
+    const meta = store.getMeta()
+    const created = meta.createdAt || Date.now()
+    const days = Math.max(1, Math.round((Date.now() - created) / 86400000))
+    $('me-head').innerHTML =
+      '<div class="hc-mask"></div>' +
+      '<span class="hc-t">简记</span>' +
+      '<span class="hc-s">' + (s.months ? '已经记了 ' + s.records + ' 笔，坚持了 ' + s.months + ' 个月' : '还没有开始记录') + '</span>' +
+      '<div class="hc-grid">' +
+      '<div class="hc-i"><span class="hc-v num">' + s.records + '</span><span class="hc-k">记账笔数</span></div>' +
+      '<div class="hc-i"><span class="hc-v num">' + s.months + '</span><span class="hc-k">记账月数</span></div>' +
+      '<div class="hc-i"><span class="hc-v num">' + days + '</span><span class="hc-k">使用天数</span></div></div>'
+    const goals = store.getGoals()
+    let savedCents = 0
+    for (let i = 0; i < goals.length; i++) savedCents += M.toCents(M.parse(goals[i].saved))
+    $('me-goaltext').textContent = goals.length ? '已攒 ¥' + M.fmt(M.toYuan(savedCents)) : '还没有目标'
+  }
+
+  /* =========================================================================
+     设置（settings）
+     ========================================================================= */
+  function renderSettings() {
+    const s = store.getSettings()
+    $('set-appearance').innerHTML = store.appearanceList().map(a =>
+      '<button class="seg-a ' + (a.key === store.getAppearance() ? 'on' : '') + '" data-v="' + a.key + '">' + a.name + '</button>'
+    ).join('')
+    $('set-appearance').querySelectorAll('.seg-a').forEach(b => {
+      b.onclick = async () => {
+        await store.setAppearance(b.dataset.v)
+        applyAppearance()
+        renderSettings()
+      }
+    })
+    const themes = store.themeList()
+    $('set-themename').textContent = (themes.filter(t => t.key === store.getTheme())[0] || { name: '系统蓝' }).name
+    $('set-themes').innerHTML = themes.map(t =>
+      '<button class="th-item ' + t.cls + ' ' + (t.key === store.getTheme() ? 'on' : '') + '" data-k="' + t.key + '">' +
+      '<span class="th-dot"></span><span class="th-name">' + esc(t.name) + '</span>' +
+      (t.key === store.getTheme() ? '<span class="th-check">✓</span>' : '') + '</button>'
+    ).join('')
+    $('set-themes').querySelectorAll('.th-item').forEach(b => {
+      b.onclick = async () => {
+        await store.setTheme(b.dataset.k)
+        applyAppearance()
+        renderSettings()
+      }
+    })
+    const total = M.parse(s.budget.total)
+    $('set-budgettext').textContent = total > 0 ? '¥' + M.fmt(total) + ' / 月' : '未设置'
+  }
+
+  async function doBackup() {
+    /* P0：按真实内容判断是否可备份（有记录 / 有目标 / 有预算） */
+    let recCount = 0
+    const keys = store.getMonthKeys()
+    for (let i = 0; i < keys.length; i++) recCount += store.getRecords(keys[i]).length
+    const goalCount = store.getGoals().length
+    const total = (store.getSettings().budget && store.getSettings().budget.total) || 0
+    if (!recCount && !goalCount && !(M.parse(total) > 0)) {
+      toast('还没有数据可以备份')
+      return
+    }
+    const text = store.exportJSON()
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(text)
+      copied = true
+    } catch (e) { /* WebView 未授权剪贴板时降级为手动复制 */ }
+    await askConfirm(
+      copied ? '备份已复制到剪贴板' : '备份已生成',
+      '内容共 ' + text.length + ' 个字符。' + (copied
+        ? '建议立刻粘贴到备忘录或文件保存，别留在剪贴板里被覆盖。下方文本框也可手动复制。'
+        : '自动复制不可用，请全选下方文本手动复制保存。'),
+      { okText: '知道了', hideCancel: true }
+    )
+  }
+  function doRestore() {
+    $('rs-text').value = ''
+    $('rs-sheet').hidden = false
+    $('gl-mask').classList.add('show')
+    requestAnimationFrame(() => $('rs-sheet').classList.add('show'))
+  }
+  async function submitRestore() {
+    const text = $('rs-text').value || ''
+    if (!text.trim()) { toast('先粘贴备份文本'); return }
+    const ok = await askConfirm('确认恢复？', '同一个月的记录会被备份里的内容替换掉，其他月份不受影响。',
+      { okText: '恢复', danger: true })
+    if (!ok) return
+    const out = await store.importJSON(text)
+    const writeFailed = out.ok && !store.lastWriteOk()
+    $('rs-sheet').classList.remove('show')
+    $('gl-mask').classList.remove('show')
+    setTimeout(() => { $('rs-sheet').hidden = true }, 300)
+    await askConfirm(
+      out.ok ? (writeFailed ? '部分恢复' : '恢复完成') : '没能恢复',
+      writeFailed ? out.msg + '。但部分写入失败，建议重试。' : out.msg,
+      { okText: '知道了', hideCancel: true }
+    )
+    if (out.ok) { applyAppearance(); render(curPage) }
+  }
+  async function doSeed() {
+    const keys = store.getMonthKeys()
+    const thisMonth = keys.length ? keys[0] : ''
+    const exist = thisMonth ? store.getRecords(thisMonth).length : 0
+    const content = exist
+      ? '本月已有 ' + exist + ' 笔真实记录，填入示例会先把它们清空并覆盖。建议先「备份数据」。确定继续？'
+      : '会填入 26 笔示例账，方便你先看看效果。'
+    const ok = await askConfirm('填入示例数据？', content, { okText: '继续', danger: !!exist })
+    if (!ok) return
+    if (exist) {
+      const ok2 = await askConfirm('最后确认', '真的要清空本月 ' + exist + ' 笔记录吗？此操作不可恢复。',
+        { okText: '确定填入', danger: true })
+      if (!ok2) return
+    }
+    const n = await store.seedDemo()
+    if (!store.lastWriteOk()) { toast('保存失败，空间可能已满'); return }
+    await askConfirm('已填入 ' + n + ' 笔', '回到「首页」看本月进度，去「统计」看分类占比。',
+      { okText: '好', hideCancel: true })
+    render(curPage)
+  }
+  async function doClear() {
+    const ok = await askConfirm('清空所有数据？', '所有账目、预算、攒钱目标都会被删除，无法恢复。',
+      { okText: '继续', danger: true })
+    if (!ok) return
+    const ok2 = await askConfirm('最后确认一次', '真的要把全部数据删掉吗？建议先做一次备份。',
+      { okText: '确定删除', danger: true })
+    if (!ok2) return
+    await store.clearAll()
+    applyAppearance()
+    render(curPage)
+    toast('已清空')
+  }
+
+  /* ================= 启动 ================= */
+  async function boot() {
+    store.setWriteFailHandler(async function () {
+      await askConfirm('保存失败', '写入没有保存成功（数据库可能被占用或磁盘空间不足）。建议先备份，再重试。',
+        { okText: '知道了', hideCancel: true, danger: true })
+    })
+    await store.init()
+    applyAppearance()
+
+    /* meta：记录打开次数（与小程序一致） */
+    const meta = store.getMeta()
+    meta.openCount = (meta.openCount || 0) + 1
+    meta.lastOpen = Date.now()
+    store.saveMeta(meta)
+
+    /* 首页日期输入上限 */
+    $('add-date').max = D.today()
+
+    /* 事件绑定 */
+    document.querySelectorAll('.nav-item').forEach(b => { b.onclick = () => goto(b.dataset.page) })
+    document.addEventListener('click', e => {
+      const go = e.target.closest('[data-goto]')
+      if (go) goto(go.dataset.goto)
+    })
+    $('idx-goadd').onclick = openCqSheet
+    $('idx-howhead').onclick = () => {
+      const body = $('idx-howbody')
+      body.hidden = !body.hidden
+      $('idx-howcaret').textContent = body.hidden ? '›' : '⌄'
+    }
+    $('cq-cancel').onclick = closeCqSheet
+    $('cq-mask').onclick = closeCqSheet
+    $('cq-save').onclick = saveCq
+    $('cq-keep').onclick = keepCq
+    $('cq-amt').oninput = e => { e.target.value = sanitizeAmount(e.target.value) }
+
+    $('add-typeseg').querySelectorAll('.type-seg-i').forEach(b => {
+      b.onclick = () => {
+        if (b.dataset.t === addState.type) return
+        addState.type = b.dataset.t
+        addState.cat = C.catsOf(addState.type)[0].key
+        addState.catTouched = false
+        addState.autoHint = false
+        refreshAddView()
+      }
+    })
+    $('add-amt').oninput = e => {
+      e.target.value = sanitizeAmount(e.target.value)
+      reguess()
+    }
+    $('add-note').oninput = e => {
+      $('add-noteclear').hidden = !e.target.value
+      reguess()
+    }
+    $('add-noteclear').onclick = () => {
+      $('add-note').value = ''
+      $('add-noteclear').hidden = true
+      reguess()
+    }
+    $('add-save').onclick = submitAdd
+
+    $('st-prev').onclick = () => loadStats(D.shiftMonth(stState.ym, -1))
+    $('st-next').onclick = () => {
+      if (stState.ym < D.thisMonth()) loadStats(D.shiftMonth(stState.ym, 1))
+    }
+    $('st-monthlabel').onclick = openMonthPicker
+    $('py-cancel').onclick = closePicker
+    $('py-mask').onclick = closePicker
+    $('py-stepback').onclick = () => { stState.pickerStep = 'year'; renderPicker() }
+    $('py-prevdec').onclick = () => {
+      const start = stState.decadeStart - 10
+      if (start < stState.minYear) return
+      stState.decadeStart = start
+      stState.years = buildDecade(start)
+      stState.canNextDecade = true
+      renderPicker()
+    }
+    $('py-nextdec').onclick = () => {
+      const start = stState.decadeStart + 10
+      const maxDecade = Math.floor(stState.maxYear / 10) * 10
+      if (stState.decadeStart >= maxDecade) return
+      stState.decadeStart = start
+      stState.years = buildDecade(start)
+      stState.canNextDecade = start < maxDecade
+      renderPicker()
+    }
+
+    $('bd-total').oninput = () => recalcBd()
+    $('bd-save').onclick = saveBudget
+    $('bd-clear').onclick = clearBudget
+    $('bd-fillhist').onclick = fillByHistory
+
+    $('gl-cancel').onclick = closeGlSheets
+    $('gl-mask').onclick = closeGlSheets
+    $('gl-save').onclick = submitGoalForm
+    $('gl-del').onclick = removeGoal
+    $('gl-deadline').oninput = () => { $('gl-deadclear').hidden = !$('gl-deadline').value }
+    $('gl-deadclear').onclick = () => { $('gl-deadline').value = ''; $('gl-deadclear').hidden = true }
+    $('dp-cancel').onclick = closeGlSheets
+    $('dp-ok').onclick = submitDeposit
+    $('dp-seg').querySelectorAll('.dp-seg-i').forEach(b => {
+      b.onclick = () => { glState.depositMode = b.dataset.m; renderDpSeg() }
+    })
+    $('dp-amt').oninput = e => { e.target.value = sanitizeAmount(e.target.value) }
+
+    $('set-backup').onclick = doBackup
+    $('set-restore').onclick = doRestore
+    $('rs-cancel').onclick = () => {
+      $('rs-sheet').classList.remove('show')
+      $('gl-mask').classList.remove('show')
+      setTimeout(() => { $('rs-sheet').hidden = true }, 300)
+    }
+    $('rs-ok').onclick = submitRestore
+    $('set-seed').onclick = doSeed
+    $('set-clear').onclick = doClear
+    $('set-how').onclick = () => {
+      const body = $('set-howbody')
+      body.hidden = !body.hidden
+      $('set-howcaret').textContent = body.hidden ? '›' : '⌄'
+    }
+
+    /* 启动页 */
+    render('index')
+  }
+
+  function runBoot() {
+    Promise.resolve(boot()).catch(function (e) {
+      /* 启动异常兜底：写失败弹窗机制覆盖不到启动阶段，至少让用户看见 title 变化 */
+      document.title = '启动异常: ' + (e && e.message ? e.message : e)
     })
   }
 
-  // ---------- 外观（跟随系统 / 浅色 / 深色；手动档持久化）----------
-  async function initAppearance() {
-    const LABEL = { system: '跟随系统', light: '浅色', dark: '深色' }
-    const ORDER = ['system', 'light', 'dark']
-    const el = document.getElementById('theme-mode'), desc = document.getElementById('theme-desc')
-    const saved = await getSet('theme_mode')
-    let cur = ORDER.indexOf(saved) >= 0 ? saved : 'system'
-    const apply = () => {
-      const root = document.documentElement
-      root.classList.toggle('theme-dark', cur === 'dark')
-      root.classList.toggle('theme-light', cur === 'light')
-      if (el) el.textContent = LABEL[cur] + ' ›'
-      if (desc) desc.textContent = cur === 'system' ? '深浅色跟随系统' : '已固定为' + LABEL[cur]
-    }
-    apply()
-    if (el) el.onclick = () => {
-      cur = ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]
-      apply()
-      setSet('theme_mode', cur).catch(() => {})
-      toast('外观：' + LABEL[cur])
-    }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', runBoot)
+  } else {
+    runBoot()
   }
-
-  // ---------- 月份切换（概览三卡 / 环形图 / 趋势终点）----------
-  const monthPill = document.getElementById('monthPill')
-  if (monthPill) monthPill.onclick = async () => {
-    const v = await askConfirm('切换月份', '输入要查看的月份（格式 YYYY-MM）：', { input: '如 2026-11', inputValue: viewYM, okText: '查看' })
-    if (v === null) return
-    const ym = String(v).trim()
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) { toast('月份格式应为 YYYY-MM'); return }
-    viewYM = ym
-    render()
-    toast('已切换到 ' + monthText(ym))
-  }
-
-  // 启动
-  loadRecords()
-  loadCategories()
-  initReminder()
-  initUpdater()
-  initAppearance()
 })()
